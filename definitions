@@ -1,0 +1,2085 @@
+// CONSTANTS
+#define MAX_TYPE_LENGTH 128
+#define MIN_TYPE_LENGTH 4
+#define MAX_LINKSOURCES 100
+#define MAX_LINKDESTINATIONS 100
+#define MAX_NAMELENGTH 80
+#define MAX_DOMAINLEVELS 12
+#define MAX_RESOURCES 100
+#define MAX_NODEINF 16
+#define MAX_SUPERNODEINF MAX_NODEINF
+#define MAX_SWITCHCOREINF MAX_NODEINF
+#define MAX_SN_SWITCHCOREINF MAX_SWITCHCOREINF
+#define MAX_LINKENDPOINTS 3  //  To accomodate for the case where super node is changing across one and the same domain interface
+#define MAX_LINKENDPOINTS_VL MAX_LINKENDPOINTS  //  Accommodating for the case where a link abstraction is changed to map to a different underlying link
+#define MAX_MSGBODY 8192
+#define MAX_MESSAGETYPES 16
+#define MAX_PDUDEST 32
+#define MAX_DATASDU 2048
+#define MAX_PDUQUEUE_LENGTH 32
+#define MAX_NODEDEST 32
+#define GENERIC_PROTOCOL_VERSION 1
+#define MAX_TTL 100
+#define HELLO_TTL 1
+// #define EXTTOPOLOGY_TTL 15  // A max value
+// #define CENTROID_TTL EXTTOPOLOGY_TTL
+#define LINKABSTRACTION_TTL 1
+// #define SUPERNODE_TTL CENTROID_TTL
+#define LINKABSTRACTION_TTL 1
+#define MIN_DOMAINSIZE 3
+#define MAX_DOMAINSIZE 100  // The maximum number of nodes in one domain
+#define MIN_DOMAINOVERLAP 0.8  // The relative overlap between an old a new domain
+#define MIN_DOMAIN_IN_TOP_OVERLAP 0.65  // The relative overlap between "dying" domain and existing topology (only counting the old domain nodes
+#define MAX_DOMAINRADIUS 16  // Expressed as number of hops
+#define MAX_DOMAIN_ROUTE (MAX_DOMAINRADIUS*2)+1
+#define MAX_HIARCH_ROUTE MAX_DOMAINLEVELS
+#define MAX_TIERS (MAX_DOMAINRADIUS*2)+1
+#define MAX_CENTROIDSCORE 1000000
+#define STABLE_CENTROID 2 // Counts the minimum number of poll iterations required for deeming a Centorid Stable
+#define MAX_ROUTES 2  // For each destination
+#define MAX_ROUTESCORE 1E+24  // Under the assumption that the score is calculated as a mean value of bandwidth
+#define MAX_REISSUELOG 8
+#define TICK_MILLISECOND 1000000000000000  // A millisecond expressed in number of the minimum tick
+#define MIN_PDU_TX_TICKS 1 // Number of minimum ticks expressed in milliseconds to send any PDU
+#define MIN_PDU_RX_TICKS 1 // Number of minimum ticks to receive any PDU
+#define GP_HELLO_INTERVAL 500 // Expressed in milliseconds, GP = GenericProtocol
+#define GP_EXTTOPOLOGY_INTERVAL 1000 // Expressed in milliseconds
+#define GP_CENTROID_INTERVAL GP_EXTTOPOLOGY_INTERVAL
+#define GP_LINKABST_INTERVAL GP_CENTROID_INTERVAL
+#define GP_SUPERNODE_INTERVAL GP_CENTROID_INTERVAL
+#define GP_NEIGHBOR_TIMETOLIVE GP_HELLO_INTERVAL*4
+#define GP_REMOTE_TIMETOLIVE GP_EXTTOPOLOGY_INTERVAL*4
+#define GP_CENTROID_TIMETOLIVE GP_CENTROID_INTERVAL*4
+#define GP_LINKABST_TIMETOLIVE GP_LINKABST_INTERVAL*4
+#define GP_SUPERNODE_TIMETOLIVE GP_SUPERNODE_INTERVAL*4
+#define INF_UP_TIMETOLIVE GP_LINKABST_TIMETOLIVE
+#define NODETOPOLOGY_INTERVAL GP_HELLO_INTERVAL*2
+#define REMOTETOPOLOGY_INTERVAL GP_EXTTOPOLOGY_INTERVAL*2
+#define CENTROIDS_INTERVAL GP_CENTROID_INTERVAL*2
+#define SORTEDTOPOLOGY_INTERVAL GP_EXTTOPOLOGY_INTERVAL*2
+#define LINKABSTRACTION_INTERVAL GP_LINKABST_INTERVAL*2
+#define SUPERNODES_INTERVAL GP_SUPERNODE_INTERVAL*2 
+#define NODEINF_BACKGROUND_POLL 1000
+#define NODE_BACKGROUND_POLL 1000
+#define SWITCHCORE_BACKGROUND_POLL 1000
+#define LINKBUILDER_TIMEOUT GP_HELLO_INTERVAL*3
+#define NODE_TIMETOLIVE GP_SUPERNODE_TIMETOLIVE*2
+#define LINK_TIMETOLIVE GP_LINKABST_TIMETOLIVE*2
+#define MAX_OLDSUPERNODES 2
+
+// #define TICKS_RESOLUTION 1 // Expressed in milliseconds, the time of a "Tick"
+#define LIGHTSPEED 300000000.0  // m/s, used when calculating link propagation delay
+#define MAX_SERVICES 16
+#define LINK_DEFAULTLENGTH 100.0  // meters
+
+// ENUMS
+enum DataDirection {RECEIVER, TRANSMITTER, TRANCEIVER};
+enum DomainLevel {DL_GLOBAL, DL_1, DL_2, DL_3, DL_4, DL_5, DL_6, DL_7, DL_8, DL_9, DL_10, DL_LOWEST, DL_UNASSIGNED};
+enum MessageClass {GENERIC, MACHINE, CEP, FLOW, INFO};
+enum GenericMsgType {GENMSG_UNDEFINED, HELLO, EXT_NODETOPOLOGY, EXT_TOPOLOGY_REFRESH, CENTROID, CENTROID_REFRESH, SUPERNODE, SUPERNODE_REFRESH, LINK_ABSTRACTION, LINK_ABST_REFRESH, REISSUE, DATA, MSGTYPE_INVALID};
+enum InterfaceType {INF_INTERNAL, INF_EXTERNAL, INF_UP, INF_DOWN, INF_SWITCHCORE};
+enum TierRelation {TIER_INNER, TIER_SAME, TIER_OUTER, TIER_UNKNOWN, TIER_UNCLEARNEIGHBOR}; // Describes the topological relation as seen from one node between nodes being on tiers (counted as hops) from one specific node
+enum CentroidStatus {I_CENTROID, NOT_CENTROID, NOT_ELIGIBLE, UNHOMED_CENTROID, UNHOMED};
+enum ServiceId {SRV_DATA};
+enum ServicePrim {SRV_DATA_SEND};
+enum ServiceMsg {SRV_MSG_OK};
+enum Direction{LEFT, RIGHT, STRAIGHT, REVERT};
+enum MobilityPattern {MOB_FIXED, MOB_RANDOM, MOB_ASSOCIATED, MOB_CUSTOM};
+enum CallbackId {CB_ENTITY, CB_NODE, CB_NODETOP, CB_REMOTETOP, CB_SORTEDTOP, CB_CENTROID, CB_LINKABST, CB_SWITCHCORE, CB_NODEINF, CB_GENPROT, CB_PDU_QUEUE};
+enum ObjSelector {OBJ_ALL, OBJ_NODE, OBJ_NODETOP, OBJ_REMOTETOP, OBJ_SORTEDTOP, OBJ_CENTROID, OBJ_LINKABST, OBJ_SWITCHCORE, OBJ_NODEINF};
+
+class Identity;
+class Link;
+class LinkEndpoint;
+class HorNodeInterface;
+class NodeInterface;
+class Node;
+class SwitchCore;
+class SwitchCoreInterface;
+class GenericProtocol;
+
+// GLOBAL STRUCTURES
+
+struct Name_s {
+	unsigned int name;
+};
+
+struct TickPoint_s {
+	unsigned __int64 tickPoint;
+};
+
+struct Identity_s {
+	string type;
+	Name_s name;
+	string nickName;
+};
+
+// CLASS IDENTITY
+class Identity {
+	Identity_s identity;
+public:
+	void Identity_init(Identity_s *id);
+	Identity_s get_identity();
+	Identity_s reset_anotherIdentity();
+	friend ostream &operator<<(ostream &stream, Identity *id);
+};
+
+// RESOURCE AND TRAITS DEFINITIONS
+
+// CLASS RESOURCE
+struct GenericTraits_s {  // The traits should generally be hard-coded into a resource, rather than being specified from the outside
+	float completionTime; // Expressed as the time it takes to access and use a resource, 0 means 0 time
+	float mtbf; // The mean time between failure of the resource, 0 means no failures at all
+};
+class Resource {
+	Identity identity;
+	GenericTraits_s genericTraits;
+public:
+	void Resource_init(Identity_s *id, GenericTraits_s traits);
+	GenericTraits_s get_genericTraits();
+	friend ostream &operator<<(ostream &stream, Resource *re);
+};
+
+// CLASS ATTACHMENTPOINTRES (PLACEHOLDER)
+struct AttachmentpointTraits_s {
+	DataDirection flowdir;
+	bool beacon;
+};
+
+class AttachmentpointRes : public Resource {
+	AttachmentpointTraits_s attachmentpointTraits;
+public:
+	void AttachmentpointRes_init(Identity_s *id, AttachmentpointTraits_s traits, GenericTraits_s genericTraits);
+	AttachmentpointTraits_s get_traits();
+	friend ostream &operator<<(ostream &stream, AttachmentpointRes *ap);
+};
+
+// CLASS TRANSMISSIONRES
+struct TransmissionTraits_s {
+	float bandwidth; // Expressed as bits/s, 0 indicates infinite bandwidth
+	float ber;  // Bit error rate
+};
+
+class TransmissionRes : public Resource {
+	TransmissionTraits_s transmissionTraits;
+public:
+	void TransmissionRes_init(Identity_s *id, TransmissionTraits_s traits, GenericTraits_s genericTraits);
+	TransmissionTraits_s get_traits();
+	friend ostream &operator<<(ostream &stream, TransmissionRes *tr);
+};
+
+// CLASS INTERFACERES
+struct InterfaceTraits_s {
+	int queueTxLength; // Expressed as number of packets, 0 indicates infinite queue length
+	int queueRxLength;
+};
+
+class InterfaceRes : public AttachmentpointRes {
+	InterfaceTraits_s interfaceTraits;
+public:
+	void InterfaceRes_init(Identity_s *id, InterfaceTraits_s infTraits, AttachmentpointTraits_s attPointTraits, GenericTraits_s genericTraits);
+	InterfaceTraits_s get_infTraits();
+	friend ostream &operator<<(ostream &stream, InterfaceRes *inf);
+};
+
+// CLASS LINKENDPOINTRES
+class LinkEndpointRes : public AttachmentpointRes {
+public:
+	void LinkEndpointRes_init(Identity_s *id, AttachmentpointTraits_s attPointTraits, GenericTraits_s genericTraits);
+	friend ostream &operator<<(ostream &stream, LinkEndpointRes *lep);
+};
+
+// CLASS PROCESSORRES
+struct ProcessorTraits_s {
+	float capacity;  // Expressed in some interesting unit, i.e. TBD, 0 indicates infinite capacity
+};
+
+class ProcessorRes : public Resource {
+	ProcessorTraits_s processorTraits;
+public:
+	void ProcessorRes_init(Identity_s *id, ProcessorTraits_s traits, GenericTraits_s genericTraits);
+	ProcessorTraits_s get_traits();
+	friend ostream &operator<<(ostream &stream, ProcessorRes *pr);
+};
+
+// CLASS MEMORYRES
+struct MemoryTraits_s {
+	float capacity;  // Expressed in bytes, 0 indicates infinite
+};
+
+class MemoryRes : public Resource {
+	MemoryTraits_s memoryTraits;
+public:
+	void MemoryRes_init(Identity_s *id, MemoryTraits_s traits, GenericTraits_s genericTraits);
+	MemoryTraits_s get_traits();
+	friend ostream &operator<<(ostream &stream, MemoryRes *me);
+};
+
+// CLASS SWITCHCORERES
+struct SwitchingTraits_s {
+	float capacity;  // Expressed as bits/s, 0 means infinite
+};
+
+class SwitchCoreRes : public Resource {
+	SwitchingTraits_s switchingTraits;
+public:
+	void SwitchCoreRes_init(Identity_s *id, SwitchingTraits_s traits, GenericTraits_s genericTraits);
+	SwitchingTraits_s get_traits();
+	friend ostream &operator<<(ostream &stream, SwitchCoreRes *sc);
+};
+
+struct SwitchCoreInterfaceTraits_s {
+	InterfaceTraits_s switchCoreInfTraits;
+	AttachmentpointTraits_s attPointTraits;
+	GenericTraits_s genInfTraits;
+};
+
+struct NodeInterfaceTraits_s {
+	InterfaceTraits_s infExtTraits;
+	AttachmentpointTraits_s attPointExtTraits;
+	InterfaceTraits_s infIntTraits;
+	AttachmentpointTraits_s attPointIntTraits;
+	InterfaceTraits_s infVerTraits;
+	AttachmentpointTraits_s attPointVerTraits;
+	GenericTraits_s genInfTraits;
+};
+
+struct LinkTraits_s {
+	float length;  // The length of the link in meters
+	int maxLinkEndpoints;  // Must be same or lower as MAX_LINKENDPOINTS
+	TransmissionTraits_s transmission;
+	GenericTraits_s genTransmission;
+};
+
+struct SwitchCoreTraits_s {
+	int maxInf;
+	SwitchingTraits_s switching;
+	GenericTraits_s genSwitching;
+};
+
+struct NodeTraits_s {
+	ProcessorTraits_s processing;
+	GenericTraits_s genProcessing;
+	MemoryTraits_s memory;
+	GenericTraits_s genMemory;
+	SwitchCoreTraits_s switchCore;
+	int maxInf;
+	DomainLevel domainLevel;
+	MobilityPattern mobPattern;
+};
+
+// STRUCTURES
+
+struct RemoteNode_s {  // Part of InterfaceInfo_s, provides information about a remote node.
+	Identity_s interfaceId;
+	Identity_s remoteLinkEndpointId;
+	Identity_s nodeId;
+	DomainLevel domainLevel;
+	bool linkBuilder;
+	Identity_s superNodeId;
+	TierRelation tier; // Only used when stored in nodes, NOT when sent between nodes, set and used only by SortedTopology
+};
+
+struct InterfaceInfo_s {  // Part of NodeTopology_s. The information provides info for each interface, including which remote nodes that can be reached via this interface/link
+	Identity_s localInterfaceId;
+	Identity_s linkId;
+	Identity_s localEndpointId;
+	LinkTraits_s extLinkTraits;
+	NodeInterfaceTraits_s nodeInfTraits;
+	LinkTraits_s intLinkTraits;
+	SwitchCoreInterfaceTraits_s switchCoreInfTraits;
+	DataDirection localDirection;
+	DomainLevel localDomainLevel;
+	bool linkBuilder;
+	Identity_s localSuperNodeId;
+	int numberNeighbors;
+	RemoteNode_s neighbors[MAX_LINKENDPOINTS-1];
+};
+
+struct NodeTopology_s { // The item that each node sends to all other nodes within a domain (via its neighbors) 
+	int numberNodeInf;
+	InterfaceInfo_s interfaces[MAX_NODEINF];
+};
+
+struct NodeInfo_s {  // Part of many of the messages defined below, provides info about the source of the message
+	Identity_s nodeId;
+	int domainRadius;  // Number of maximum node hops counted from the node center to a domain border 
+	bool domainCenter;  // True if node is the domain center.
+	bool coreNode;
+	NodeTraits_s nodeTraits;  // A generic node is giving infinite resources,
+};
+
+struct CenDomainNode_s {
+	bool safePerimeter; // Indicates whether the node is within the safe perimeter (domainRadius/2)
+	Identity_s domainNodeId; // Only filled in when centroidStatus == I_CENTROID
+};
+
+
+struct NeighborNodeInfo_s {  // Stores relevant info received in a HELLO message
+	NodeInfo_s remoteNode;
+	Identity_s linkId;
+	Identity_s remoteInterfaceId;
+	Identity_s remoteLinkEndpointId;
+	DomainLevel remoteDomainLevel;
+	bool linkBuilder;  // See nodeTopologyItem_s
+	Identity_s remoteSuperNodeId;  // Only have relevance in case of an inter-domain interface
+	TickPoint_s timeToLive;  // Expressed in absolute time;
+	void *protTraceRef;
+};
+
+struct ExtNodeTopInfo_s {  // Stores relevant info received in an EXT_NODETOPOLOGY/EXT_TOPOLOGY_REFRESH message
+	GenericMsgType msgType;
+	int version;
+	int refreshCount;  // Only valid in case of a refresh.
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	bool reissue;
+	TickPoint_s timeToLive;
+	NodeInfo_s origNode;
+	NodeTopology_s origNodeTop;
+	void *protTraceRef;
+};
+
+struct CentroidInfo_s {  // Stores relevant info received in a CENTROID/CENTROID_REFRESH message
+	GenericMsgType msgType;
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	bool reissue;
+	TickPoint_s timeToLive;
+	NodeInfo_s origNode;
+	int version;
+	int refreshCount;  // Only valid in case of a refresh
+	int domainRadius;
+	float centroidScore;
+	CentroidStatus centroidStatus;
+	Identity_s currentCentroid;  // Indicates the chosen Centroid
+	int numberNodes; // Indicates number of nodes in the domainNodes array
+	CenDomainNode_s domainNodes[MAX_DOMAINSIZE];
+	void *protTraceRef;
+};
+
+struct SuperNodeInfo_s {  // Stores relevant info received in a SUPERNODE/SUPERNODE_REFRESH message
+	GenericMsgType msgType;
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	bool reissue;
+	TickPoint_s timeToLive;
+	NodeInfo_s origNode;
+	int version;
+	int refreshCount;  // Only valid in case of a refresh
+	Node *superNodeRef;
+	void *protTraceRef;
+};
+
+struct LinkAbstractionInfo_s {  // Stored relevant info received in a LINK_ABSTRACTION/LINK_ABST_REFRESH message
+	GenericMsgType msgType;
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	bool reissue;
+	TickPoint_s timeToLive;
+	NodeInfo_s origNode;
+	int numberDest;
+	Identity_s destNodes[MAX_LINKENDPOINTS-1];  // The restriction due to the number of nodes that can interconnect via a link abstraction
+	int version;
+	int refreshCount;  // Only valid in case of a refresh
+	Link *linkAbstraction;
+	DomainLevel domainLevel; // The domain level at which the link abstraction is used
+	Identity_s linkId;
+	void *protTraceRef;
+};
+
+struct ReissueInfo_s {  // Stores relevant info received in a REISSUE message, or what is to be or has been logged
+	bool initialized;  // Indicates whether the node has initizlized a reissue request
+	bool processed;  // Indicates whether the reissue request has been processed
+	GenericMsgType msgType;
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	NodeInfo_s origNode;
+	Identity_s issueNode; // The node from which a reissue is requested, if set to INVALID it asks for a reissuing from all nodes
+	GenericMsgType reissueMsg;  // The type of message to be reissued, if set to MSGTYPE_INVALID it asks for a re-issueing of all message types, HELLO excempted
+	int version;  // NB!!! Not the version of the REISSUE msg, but the version of the message to be reissued
+	int refreshCount; // See version
+	Link *linkAbstraction;  // Only used in case of reissueing a LINK_ABSTRACTUIN message
+	Identity_s linkId;  // Only used in case of reissueing a LINK_ABSTRACTUIN message
+	void *protTraceRef;
+};
+
+struct DataInfo_s {  // Stores relevant info received in a DATA message
+	GenericMsgType msgType;
+	int PDU_number;
+	int PDU_size;
+	int PDU_TTL;
+	TickPoint_s timeToLive;
+	Identity_s origNode;
+	int numberNodes; // Indicates number of nodes in the nodeID array
+	Identity_s nodeId[MAX_NODEDEST];
+	Identity_s hiarchRuote[MAX_HIARCH_ROUTE];  // To be refined!!!
+	char data[MAX_DATASDU];  // Type-casting might be needed
+	void *protTraceRef;
+};
+
+struct MsgBody_s {
+	char data[MAX_MSGBODY]; // Type-casting applied, NodeInfo_s in case of HELLO messages, NodeTopology_s nodeTopology in case of EXT_NODETOPOLOGY messages
+};
+
+struct PDU_Address_s {
+	Identity_s nodeId;
+	Identity_s nodeInfId;   // An invalid Id means anycast
+};
+
+struct GenericPDU_Header_s {
+	MessageClass msgClass;
+	GenericMsgType msgType;
+	int protocolVersion;
+	int PDU_number; // Increased by 1 for each transmitted PDU
+	int PDU_TTL; // Decreased by 1 for each node relay. Will be deleted, i.e. not further relayed, when it becomes 0.
+	int PDU_size;
+	PDU_Address_s sourceNode;
+	int numberDest;  // 0 means broadcast
+	PDU_Address_s destNode[MAX_PDUDEST];  // Multicast supported, no destination nodes listed mean broadcast. NB!!! This is a next hop address only.
+};
+
+struct MsgBody_Hello_s {
+	NodeInfo_s localNode;
+	Identity_s localInterfaceId;
+	Identity_s linkId;
+	Identity_s localLinkEndpointId;
+	bool linkBuilder;  // See nodeTopologyItem_s
+	DomainLevel domainLevel;
+	Identity_s localSuperNodeId;  // Only has relevance in case of an inter-domain interface.
+};
+
+struct MsgBody_ExtNodeTop_s {
+	NodeInfo_s sourceNode;
+	int version;
+	bool reissue;  // Indicates whether this is a reissueing of a previous message (not a *_REFRESH)
+	NodeTopology_s nodeTopology;
+};
+
+struct MsgBody_ExtTopRefresh_s {
+	NodeInfo_s sourceNode;
+	int version;
+	int refreshCount;
+};
+
+struct MsgBody_Centroid_s {
+	NodeInfo_s sourceNode;
+	int version;
+	bool reissue;  // Indicates whether this is a reissueing of a previous message (not a *_REFRESH)
+	int domainRadius; // Expressed as number of hops
+	float centroidScore;  // The centroid score of this node
+	CentroidStatus centroidStatus;
+	Identity_s currentCentroid; // The identity of the node which this node (sourceNode) believes is the centroid of the domain to which it belongs
+	int numberNodes; // Indicated number of nodes in the domainNodes array
+	CenDomainNode_s domainNodes[MAX_DOMAINSIZE];  // Lists all the nodes as selected by the Centroid as being part of the domain
+};
+
+struct MsgBody_CentroidRefresh_s {
+	NodeInfo_s sourceNode;
+	int version;
+	int refreshCount;
+	float centroidScore;  // The centroid score of this node
+	CentroidStatus centroidStatus;
+};
+
+struct MsgBody_SuperNode_s {
+	NodeInfo_s sourceNode;
+	int version;
+	bool reissue;  // Indicates whether this is a reissueing of a previous message (not a *_REFRESH)
+	Node *superNodeRef;
+};
+
+struct MsgBody_SuperNodeRefresh_s {
+	NodeInfo_s sourceNode;
+	int version;
+	int refreshCount;
+	Node *superNodeRef;
+};
+
+struct MsgBody_LinkAbstraction_s {
+	NodeInfo_s sourceNode;  // The node that has created this link abstraction
+	int version;
+	bool reissue;  // Indicates whether this is a reissueing of a previous message (not a *_REFRESH)
+	Link *linkAbstraction;
+	int numberPeers; // Number of peers in array below
+	Identity_s peeringNodes[MAX_LINKENDPOINTS-1];  // The ID:s of the nodes that can be reached via the link abstraction
+	bool peerValidated[MAX_LINKENDPOINTS-1];  // Used as part of checking status for each link abstraction
+	DomainLevel domainLevel;  // The domain level at which the link absraction is applied
+	Identity_s linkId;  // The id of the underlying link for which there is this link abstraction
+};
+
+struct MsgBody_LinkAbstRefresh_s {
+	NodeInfo_s sourceNode;
+	int version;
+	int refreshCount;
+	Link *linkAbstraction;
+	Identity_s linkId;
+};
+
+struct MsgBody_Reissue_s {
+	NodeInfo_s sourceNode;
+	Identity_s issueNode; // The node from which a reissue is requested, if set to INVALID it asks for a reissuing from all nodes
+	GenericMsgType reissueMsg;  // The type of message to be reissued, if set to MSGTYPE_INVALID it asks for a re-issueing of all message types, HELLO and LINK_ABSTRACTION excempted
+	int version;  // The version to be reissued, or a higher version
+	int refreshCount;  // The refreshCount of the received REFRESH message which triggers a reissueing
+	Link *linkAbstraction;  // Only used in case of reissueing a LINK_ABSTRACTUIN message
+	Identity_s linkId;  // Only used in case of reissueing a LINK_ABSTRACTUIN message
+};
+
+struct MsgBody_Data_s {
+	PDU_Address_s hiarchRoute[MAX_DOMAIN_ROUTE][MAX_DOMAINLEVELS]; // To be refined
+	char data[MAX_DATASDU];  //Type casting might be needed
+};
+
+union MsgBodyRef_u {
+	MsgBody_Hello_s *helloBody;
+	MsgBody_ExtNodeTop_s *extNodeTopBody;
+	MsgBody_ExtTopRefresh_s *extTopRefreshBody;
+	MsgBody_Centroid_s *centroidBody;
+	MsgBody_CentroidRefresh_s *centroidRefreshBody;
+	MsgBody_SuperNode_s *superNodeBody;
+	MsgBody_SuperNodeRefresh_s *superNodeRefreshBody;
+	MsgBody_LinkAbstraction_s *linkAbstBody;
+	MsgBody_LinkAbstRefresh_s *linkAbstRefreshBody;
+	MsgBody_Reissue_s *reissueBody;
+};
+
+struct GenericPDU_s {
+	int copiesSent;
+	int copiesReceived;
+	void *protTraceRef;
+	GenericPDU_Header_s header;
+	MsgBodyRef_u msgBody;
+};
+
+struct GenericPDU_Hello_s {
+	GenericPDU_Header_s header;
+	MsgBody_Hello_s body;
+};
+
+struct GenericPDU_ExtNodeTop_s {
+	GenericPDU_Header_s header;
+	MsgBody_ExtNodeTop_s body;
+};
+
+struct GenericPDU_ExtTopRefresh_s {
+	GenericPDU_Header_s header;
+	MsgBody_ExtTopRefresh_s body;
+};
+
+struct GenericPDU_Centroid_s {
+	GenericPDU_Header_s header;
+	MsgBody_Centroid_s body;
+};
+
+struct GenericPDU_CentroidRefresh_s {
+	GenericPDU_Header_s header;
+	MsgBody_CentroidRefresh_s body;
+};
+
+struct GenericPDU_SuperNode_s {
+	GenericPDU_Header_s header;
+	MsgBody_SuperNode_s body;
+};
+
+struct GenericPDU_SuperNodeRefresh_s {
+	GenericPDU_Header_s header;
+	MsgBody_SuperNodeRefresh_s body;
+};
+
+struct GenericPDU_LinkAbstraction_s {
+	GenericPDU_Header_s header;
+	MsgBody_LinkAbstraction_s body;
+};
+
+struct GenericPDU_LinkAbstRefresh_s {
+	GenericPDU_Header_s header;
+	MsgBody_LinkAbstRefresh_s body;
+};
+
+struct GenericPDU_Reissue_s {
+	GenericPDU_Header_s header;
+	MsgBody_Reissue_s body;
+};
+
+struct GenericPDU_Data_s {
+	GenericPDU_Header_s header;
+	MsgBody_Data_s body;
+};
+
+struct GenProtQLength_s {  // Specifies the queue lengths for interfaces/generic protocol
+	int txQ;
+	int rxQ;
+};
+
+struct LinkAbstMsg_s {
+	LinkAbstMsg_s *prevItem;
+	TickPoint_s timeToLive;
+	int currentVersion;  // Is updated by the protocol running for each respective underlying link
+	int reissueCount;
+	int currentReissueCount;   // Is updated by the protocol running for each respective underlying link 
+	TickPoint_s lastTicksRead, ticksDiff;  // Is used for controlling increments of the refreshCount 
+	MsgBody_LinkAbstraction_s linkAbstractionBody;
+	MsgBody_LinkAbstRefresh_s linkAbstRefreshBody;
+	LinkAbstMsg_s *nextItem;
+};
+
+
+struct LinkAbstInfo_s {
+	LinkAbstInfo_s *previousItem;
+	bool initialized;
+	NodeInterface *nodeInfRef; // The node interface to which the horizontal and vertical link are attached
+	Identity_s origNodeId; // The node that created this link abstraction
+	Link *horLinkRef;  // The horizontal link at supernode level, i.e. the linkabstraction
+	LinkEndpoint *localHorLinkEndpoint;
+	Link *verLinkRef;  // The vertical link connecting to the underlying domain
+	LinkEndpoint *localVerLinkEndpoint;
+	bool linkBuilder;  // True if this node creates the linkabstraction
+	int numberLinks;  // Number of links for which there are link abstraction PDUs
+	LinkAbstMsg_s *firstLinkAbstMsg;
+	LinkAbstInfo_s *nextItem;
+};
+
+// CLASS DECLARATIONS, EXCEPT RESOURCE & TRAITS
+
+// CLASS ETCETERA
+class Etcetera {
+public:
+	int intToCharLength(int number);
+	int intToCharLength(unsigned int number);
+	int intToCharLength(unsigned __int64 number);
+	void tabFill(int totalLength, int length, std::ofstream &out);
+};
+
+// CLASS GLOBALNAME
+class GlobalName {
+	int allocatedNamesCount;
+	Name_s lastAllocatedName;
+public:
+	void GlobalName_init();
+	Name_s reset_globalName();
+	Name_s allocate_globalName();
+	bool check_ifValid(Name_s name);  // Returns true if valid
+	int get_namesCount();
+	bool compare_names(Name_s name1, Name_s name2);  // Returns true if first name is "higher" than second name
+	bool check_ifEqual(Name_s name1, Name_s name2);  // Returns true if names are equal
+	int get_nameLength(Name_s name); // Returns the length in characters of the name when to be displayed.
+};
+
+// CLASS CALLBACKSYSTEM
+class CallbackSystem {
+	int secretTickZero;  // Can be used to only let trusted classes use the callback function
+public:
+	void CallbackSystem_init();
+	virtual void CALLBACK_tickZero(void *parameters, int secret) = 0;
+	virtual void CALLBACK_checkTimeToLive() = 0;
+};
+
+// CLASS ENTITY
+class Entity : public CallbackSystem {
+	Identity identity;
+	Identity_s liveKeeperId;
+	TickPoint_s timeToLiveTicks;  //  Value zero indicates infinite time
+	int entCallbackRef;
+	// Resource resource[]; deferred
+	// Service service[]; deferred
+public:
+	void Entity_init(Identity_s *id, unsigned int ttl, Identity_s *liveKeeper);  // TTL in milliseconds relative to present time, 0 indicates infinite time
+	void Entity_delete();
+	Identity_s get_identity();
+	Identity_s reset_anotherIdentity();
+	int update_liveKeeper(Identity_s *id);
+	Identity_s *get_liveKeeper();
+	int update_timeToLive(unsigned int ttl, Identity_s *liveKeeper);  // TTL in milliseconds relative to present time
+	TickPoint_s get_timeToLive();
+	void CALLBACK_checkTimeToLive();
+	virtual void CALLBACK_tickZero(void *parameters, int secret) = 0;
+	friend ostream &operator<<(ostream &stream, Entity *en);
+};
+
+class DomainLevelAlgebra {
+public:
+	DomainLevel decreaseDomainLevel(DomainLevel level);
+	DomainLevel increaseDomainLevel(DomainLevel level);
+	bool isHigher(DomainLevel level1, DomainLevel level2);  // Returns true if level1 is higher, i.e. lower value, than level2 
+};
+
+// CLASS CALLBACKPROTOCOL
+class CallbackProtocol {
+	double secretSendPDU, secretPutPDUOnLink, secretRecPDUFromLink, secretProcessPDURxPDUs;  // Can be used to only let trusted classes use a specific callback function
+public:
+	void CallbackProtocol_init();
+	virtual int CALLBACK_send_PDU(GenericMsgType msgType) = 0;
+	virtual int CALLBACK_sendLinkAbst_PDU(GenericMsgType msgType, LinkAbstInfo_s *linkAbst, LinkAbstMsg_s *linkAbstMsg) = 0;
+	virtual void CALLBACK_put_PDU_onLink(GenericPDU_s *pdu, double secret) = 0;
+	virtual void CALLBACK_rec_PDU_fromLink(GenericPDU_s *pdu, double secret) = 0;
+	virtual void CALLBACK_process_rxPDUs(GenericPDU_s *pdu, double secret) = 0;
+};
+
+// CLASS CALLBACKINTERFACE
+class CallbackInterface {
+	double secretNeighborInfo, secretExtTopology, secretCentroid;
+public:
+	void CallbackInterface_init();
+	virtual void CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor) = 0;
+	virtual void CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop) = 0;
+	virtual void CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo) = 0;
+	virtual void CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo) = 0;
+	virtual void CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo) = 0;
+	virtual void CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo) = 0;
+//	virtual void CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data);
+};
+
+// CLASS PDU_QUEUE
+enum QueueDir {RX, TX};
+
+struct QueueItem_s {
+	QueueItem_s *nextItem;
+	TickPoint_s ticks;
+	GenericPDU_s *pdu;
+	CallbackProtocol *callbackfunction;
+	QueueItem_s *previousItem;
+};
+
+class PDU_Queue : public Entity {
+	QueueDir queueDir;
+	int currentQueueLength;
+	int maxQueueLength;
+	QueueItem_s *queueHead, *queueTail;
+	GenericProtocol *protRef;
+	int callbackRef;
+public:
+	void PDU_Queue_init(Identity_s *id, QueueDir direction, int qLen, unsigned int ttl, GenericProtocol *genProtRef);
+	void PDU_Queue_delete();
+	int add_queueItem(GenericPDU_s *pdu, TickPoint_s ticks, CallbackProtocol *callbackFunction);
+	GenericPDU_s *remove_queueItem();
+	void flush_queue();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	int get_queueSize();
+	friend ostream &operator<<(ostream &stream, PDU_Queue *pq);
+};
+
+// CLASS LINKENDPOINT
+
+struct LinkEndpointTraits_s {
+	AttachmentpointTraits_s attPointTraits;
+	GenericTraits_s genTraits;
+};
+
+class LinkEndpoint : public Entity {
+	LinkEndpointRes endpointRes;
+	LinkEndpointTraits_s myLinkEndpointTraits;
+	void (*CALLBACK_receivePDU)(GenericPDU_s *pdu);
+public:
+	void LinkEndpoint_init(Identity_s *id, LinkEndpointTraits_s linkEndpointTraits, unsigned int ttl);
+	void LinkEndpoint_delete();
+	DataDirection get_linkDataDir();
+	LinkEndpointTraits_s get_linkEndpointTraits();
+	void *get_CALLB_recPDU();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	friend ostream &operator<<(ostream &stream, LinkEndpoint *le);
+};
+
+// CLASS LINKTOPOLOGY
+union CALLBACK_Functions_u {
+	CallbackProtocol *CALLBACK_ProtFunctions;
+	CallbackInterface *CALLBACK_InfFunctions;
+};
+
+struct LinkDestEndpointInfo_s {
+	Identity_s nodeId; // attached node, if any
+	Identity_s nodeInfId;  // Id of attached node interface
+	Identity_s superNodeId;  // Id of superNode, if any NB!!! Only one superNode supported at the moment
+	CALLBACK_Functions_u CALLBACK_functions;
+};
+
+struct LinkDestEndpoint_s {
+	LinkDestEndpoint_s *previousDest;
+	LinkEndpoint *linkEndpoint;
+	Identity_s nodeId; // attached node, if any
+	Identity_s superNodeId; // superNode, if anyone existing  NB!!! Only one superNode supported at the moment
+	Identity_s interfaceId; // attached interface, if any
+	CALLBACK_Functions_u CALLBACK_functions;
+	LinkDestEndpoint_s *nextDest;
+};
+
+struct LinkSourceEndpoint_s {
+	LinkSourceEndpoint_s *previousSource;
+	LinkEndpoint *linkEndpoint;
+	Identity_s nodeId; // attached node, if any
+	Identity_s interfaceId; // attached interface, if any
+	LinkSourceEndpoint_s *nextSource;
+	LinkDestEndpoint_s *firstDest;
+};
+
+class LinkTopology {
+	Identity identity;
+	LinkSourceEndpoint_s *firstSourceEndpoint;
+	LinkDestEndpoint_s *destEndpoint, *nextDestEndpoint;
+	int currentNumberSources;
+	int currentNumberDestinations;
+public:
+	void LinkTopology_init(Identity_s *id);
+	int add_linkEndpoint(LinkEndpoint *linkEndpoint);
+	int remove_linkEndpoint(LinkEndpoint *linkEndpoint);
+	bool isLinkEndpoint_installed(LinkEndpoint *linkEndpoint);
+	bool isLinkEndpoint_installed(Identity_s *endpointId);
+	bool isNodeAttached(Identity_s *nodeId);
+	bool isAnyNodeAttached();
+	int add_linkEndpointInfo(LinkEndpoint *linkEndpoint, Identity_s *nodeId, Identity_s *interfaceId, CallbackProtocol *CAllBACK_functions);
+	int add_linkEndpointInfo(LinkEndpoint *linkEndpoint, Identity_s *nodeId, Identity_s *interfaceId, CallbackInterface *CAllBACK_functions);
+	int remove_linkEndpointInfo(LinkEndpoint *linkEndpoint);
+	int add_superNodeInfo(LinkEndpoint *linkEndpoint, Identity_s *superNodeId);
+	int remove_superNodeInfo(LinkEndpoint *linkEndpoint);
+	LinkDestEndpointInfo_s get_nextLinkDestEndpointInfo(LinkEndpoint *linkEndpoint);
+	LinkDestEndpointInfo_s get_linkEndpointInfo(LinkEndpoint *linkEndpoint);  // Not implemented!!!
+	friend ostream &operator<<(ostream &stream, LinkTopology *lt);
+};
+
+// CLASS LINK
+
+struct LinkEndpointList_s {
+	LinkEndpointList_s *previousLinkEndpoint;
+	LinkEndpoint *linkEndpoint;
+	bool attached;  // Indicates whether the linkEndpoint is attached to a node
+	LinkEndpointList_s *nextLinkEndpoint;
+};
+
+struct LinkInfo_s {
+	Identity_s linkId;
+	bool coreLink;
+	LinkTraits_s linkTraits;
+};
+
+class Link : public Entity { // A link's characteristics are known upon time of creation, thus generally no params passed to init. 
+	LinkTopology linkTopology;
+	LinkEndpointList_s *firstLinkEndpoint, *nextLinkEndpoint;
+	int currentNumberLinkEndpoints;
+	LinkInfo_s myLinkInfo;
+	TransmissionRes transmission; // For a generic link, the transmission capacity is unlimited
+public:
+	void Link_init(Identity_s *id, bool coreLink, LinkTraits_s linkTraits, unsigned int ttl, Identity_s *liveKeeper);
+	void Link_delete();
+	int get_currentNumberLinkEndpoints();
+	int add_linkEndpoint(LinkEndpoint *linkEndpoint);
+	int remove_linkEndpoint(LinkEndpoint *linkEndpoint);
+	bool isLinkEndpoint_installed(LinkEndpoint *linkEndpoint);
+	bool isLinkEndpoint_attached(LinkEndpoint *linkEndpoint);
+	bool isNodeAttached(Identity_s *nodeId);
+	bool isAnyNodeAttached();
+	int attach_node(Identity_s *nodeId, Identity_s *interfaceId, LinkEndpoint *linkEndpoint, CallbackProtocol *CALLBACK_functions);
+	int attach_node(Identity_s *nodeId, Identity_s *interfaceId, LinkEndpoint *linkEndpoint, CallbackInterface *CALLBACK_functions);
+	int detach_node(LinkEndpoint *linkEndpoint);
+	int attach_superNode(Identity_s *superNodeId, LinkEndpoint *linkEndpoint);
+	int remove_superNode(LinkEndpoint *linkEndpoint);
+	LinkEndpoint *get_nextLinkEndpoint(bool reset);
+	LinkDestEndpointInfo_s get_nextLinkEndpointInfo(LinkEndpoint *linkEndpoint);
+	LinkDestEndpointInfo_s get_linkEndpointInfo(LinkEndpoint *linkEndpoint);  // Not implemented
+	float get_linkLength();
+	LinkTraits_s get_linkTraits();
+	LinkInfo_s *get_myLinkInfo();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	friend ostream &operator<<(ostream &stream, Link *li);
+	// void topology_discovery(); // Depends on link type, for any statically configuted links, this is not a valid function.
+private:
+	LinkEndpointList_s *find_linkEndpointItem(Identity_s *linkEndpointId);
+};
+
+// CLASS GENERICPROTOCOL
+
+struct LocalInfInfo_s {
+	Link *attachedLink;
+	LinkEndpoint *attachedLinkEndpoint;
+	Node *nodeRef;  // Only used in case of a node interface
+	HorNodeInterface *localInterface;  // Only used in case of a node interface
+	NodeInfo_s *node;
+	SwitchCore *switchRef; // Only used in case local interface is associated to a switchcore
+	SwitchCoreInterface *localSwitchInf; // Only used in case of a switchcore interface
+	int TTL;
+};
+
+class GenericProtocol : public CallbackProtocol, public Entity {
+	int PDU_Counter, sentPDUs, recPDUs;
+	TickPoint_s helloTicks, extNodeTopTicks, centroidTicks, superNodeTicks, linkAbstractionTicks;
+	int	helloCallbackRef, extNodeCallbackRef, centroidCallbackRef, superNodeCallbackRef, linkAbstCallbackRef;
+	int currentNodeTopVersion, currentCentroidVersion, currentSuperNodeVersion;
+	int currentNodeTopReissueCount, currentCentroidReissueCount, currentSuperNodeReissueCount;
+	Identity_s currentSuperNodeId;
+	bool protocolRunning;
+	LocalInfInfo_s thisNode;
+	PDU_Queue *sendQueue, *recQueue;
+	GenProtQLength_s qLength;
+	int sentMsgTypes[MAX_MESSAGETYPES];
+	int recMsgTypes[MAX_MESSAGETYPES];
+	GenericMsgType msgType[MAX_MESSAGETYPES];
+public:
+	void GenericProtocol_init(Identity_s *id, Node *nodeRef, NodeInfo_s *localNode, HorNodeInterface *localInf, Link *attachedLink, LinkEndpoint *attachedEndpoint, GenProtQLength_s qLen, unsigned int ttl);  // Used by horizontal node interfaces
+	void GenericProtocol_init(Identity_s *id, SwitchCore *switchRef, NodeInfo_s *localNode, SwitchCoreInterface *localInf, Link *attachedLink, LinkEndpoint *attachedEndpoint, GenProtQLength_s qLen, unsigned int ttl);  // Used by switchcore interfaces
+	void GenericProtocol_delete();
+	int start_protocol();
+	int stop_protocol();
+	bool is_protocolRunning();
+	int send_PDU(GenericPDU_s *pdu);  // To be used by an external caller
+	void reset();
+	void dealloc_memory();
+	NodeInfo_s *get_localNodeInfo();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	int CALLBACK_send_PDU(GenericMsgType msgType);
+	int CALLBACK_sendLinkAbst_PDU(GenericMsgType msgType, LinkAbstInfo_s *linkAbst, LinkAbstMsg_s *linkAbstMsg);
+	void CALLBACK_put_PDU_onLink(GenericPDU_s *pdu, double secret);
+	void CALLBACK_rec_PDU_fromLink(GenericPDU_s *pdu, double secret);
+	void CALLBACK_process_rxPDUs(GenericPDU_s *pdu, double secret);
+	friend ostream &operator<<(ostream &stream, GenericProtocol *gp);
+private:
+	int queue_PDU_tx(GenericPDU_s *pdu);
+	int queue_PDU_rx(GenericPDU_s *pdu);
+	void gen_sendExtTop_message(MsgBody_ExtNodeTop_s *msgBodyExtNodeTop);
+	void gen_centroid_message(MsgBody_Centroid_s *msgBodyCentroid);
+	void send_linkAbst_messages();
+	int deletePDU(GenericPDU_s *pdu);
+};
+
+// INTERFACES
+
+// CLASS HORNODEINTERFACE
+
+struct HorNodeInterfaceTraits_s {
+	InterfaceTraits_s infHorTraits;
+	AttachmentpointTraits_s attPointTraits;
+	GenericTraits_s genInfTraits;  // Includes also generic traits
+};
+
+struct AttachedLink_s {
+	Link *link;
+	LinkEndpoint *linkEndpoint;
+};
+
+class HorNodeInterface : public CallbackInterface, public Entity {
+	InterfaceType infType;
+	DomainLevel interfaceDomainLevel;
+	AttachedLink_s attachedLink;
+	Node *localNode;
+	NodeInterface *localNodeInf;
+	NodeInfo_s *localNodeInfo;
+	GenericProtocol *protocol;
+	InterfaceRes horNodeInfRes;
+public:
+	void HorNodeInterface_init(Identity_s *id, InterfaceType type, DomainLevel infDomainLevel, Node *nodeRef, NodeInterface *nodeInf, NodeInfo_s *nodeInfo, HorNodeInterfaceTraits_s infTraits, unsigned int ttl);
+	void HorNodeInterface_delete();
+	bool isLinkAttached(Link *link);
+	AttachedLink_s isLinkAttached();
+	int attach_link(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_link(Link *link);
+	int start_interface();
+	int stop_interface();
+	bool is_interfaceRunning();
+	int set_interfaceDomainLevel(DomainLevel infDomainLevel);
+	DomainLevel get_interfaceDomainLevel();
+	InterfaceType get_interfaceType();
+	NodeInterface *get_nodeInfRef();
+	bool is_domainInterface();
+	int check_attPointCompatibility(Link *link, LinkEndpoint *linkEndp);
+	int send_PDU(GenericPDU_s *pdu);
+	int update_ownNodeTopInfo(MsgBody_ExtNodeTop_s *ownTopInfo);
+	HorNodeInterfaceTraits_s get_horNodeInfTraits();
+	void CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor);
+	void CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop);
+	void CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo);
+	void CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo);
+	void CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo);
+	void CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo);
+	void CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	friend ostream &operator<<(ostream &stream, HorNodeInterface *hi);
+};
+
+
+// CLASS VERNODEINTERFACE
+struct VerNodeInterfaceTraits_s {
+	InterfaceTraits_s infVerTraits;
+	AttachmentpointTraits_s attPointTraits;
+	GenericTraits_s genInfTraits;
+};
+
+class VerNodeInterface : public CallbackInterface, public Entity {
+	InterfaceType infType;
+	AttachedLink_s attachedLink;
+	Node *localNode;
+	NodeInterface *localNodeInf;
+	NodeInfo_s *localNodeInfo;
+	Identity_s nodeInfId[MAX_LINKENDPOINTS-1];
+	bool interfaceRunning;
+	InterfaceRes verNodeInfRes;
+public:
+	void VerNodeInterface_init(Identity_s *id, InterfaceType type, Node *nodeRef, NodeInterface *nodeInf, NodeInfo_s *nodeInfo, VerNodeInterfaceTraits_s infTraits, unsigned int ttl);
+	void VerNodeInterface_delete();
+	bool isLinkAttached(Link *link);
+	AttachedLink_s isLinkAttached();
+	int attach_link(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_link(Link *link);
+	int start_interface();
+	int stop_interface();
+	int associate_nodeInterface(Identity_s nodeInfId);  // Associates an underlying node interface to the upper (this) node interface
+	int deass_nodeInterface(Identity_s nodeInfId);
+	bool is_nodeInf_associated(Identity_s nodeInfId);
+	bool is_interfaceRunning();
+	InterfaceType get_interfaceType();
+	NodeInterface *get_nodeInfRef();
+	int send_PDU(GenericPDU_s *pdu);
+	VerNodeInterfaceTraits_s get_verNodeInfTraits();
+	void CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor);
+	void CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop);
+	void CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo);
+	void CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo);
+	void CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo);
+	void CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo);
+	void CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	friend ostream &operator<<(ostream &stream, VerNodeInterface *vi);
+};
+
+
+// CLASS SWITCHCOREINTERFACE
+
+class SwitchCoreInterface : public CallbackInterface, public Entity {
+	InterfaceType infType;
+	AttachedLink_s attachedLink;
+	SwitchCore *localSwitch;
+	NodeInfo_s *localNodeInfo;
+	GenericProtocol *protocol;
+	InterfaceRes switchCoreInfRes;
+public:
+	void SwitchCoreInterface_init(Identity_s *id, InterfaceType type, SwitchCore *switchRef, NodeInfo_s *nodeInfo, SwitchCoreInterfaceTraits_s infTraits, unsigned int ttl);
+	void SwitchCoreInterface_delete();
+	bool isLinkAttached(Link *link);
+	AttachedLink_s isLinkAttached();
+	int attach_link(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_link(Link *link);
+	int start_interface();
+	int stop_interface();
+	bool is_interfaceRunning();
+	InterfaceType get_interfaceType();
+	SwitchCoreInterfaceTraits_s get_switchCoreInfTraits();
+	void CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor);
+	void CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop);
+	void CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo);
+	void CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo);
+	void CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo);
+	void CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo);
+	void CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	friend ostream &operator<<(ostream &stream, SwitchCoreInterface *si);
+};
+
+// CLASS NODEINTERFACE
+struct InterfaceUpInfo_s {
+	InterfaceUpInfo_s *previousItem;
+	bool initialized;
+	VerNodeInterface *infUp;
+	Link *upLink;
+	LinkEndpoint *upLinkEndp;
+	Identity_s superNodeId;  // The id of the superNode associated with this interface
+	Identity_s linkAbstractionId;  // The id of the link abstraction (the very link!) associated with this interface
+	TickPoint_s timeToLive;
+	InterfaceUpInfo_s *nextItem;
+};
+
+class NodeInterface : public CallbackInterface, public Entity {
+	DomainLevel interfaceDomainLevel;
+	HorNodeInterface interfaceInt, interfaceExt;
+	VerNodeInterface interfaceDown;
+	InterfaceUpInfo_s *firstInterfaceUp;
+	Node *localNode;
+	NodeInfo_s *localNodeInfo;
+	TickPoint_s interfaceTicks;
+	int callbackRef;
+	VerNodeInterfaceTraits_s infVerTraits;  // This one needs to be stored as the up interface is being dynamically created, also contains generic traits which are common to all Hor/Ver interfaces
+public:
+	void NodeInterface_init(Identity_s *id, DomainLevel infDomainLevel, Node *nodeRef, NodeInterfaceTraits_s nodeInfTraits, unsigned int ttl);
+	void NodeInterface_delete();
+	int attach_linkExt(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_linkExt(Link *link);
+	int attach_linkInt(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_linkInt(Link *link);
+	int attach_linkVerDown(Link *link, LinkEndpoint *linkEndpoint);
+	int detach_linkVerDown(Link *link);
+	int attach_linkVerUp(Identity_s *infUpId, Link *link, LinkEndpoint *linkEndpoint);
+	int detach_linkVerUp(Identity_s *infUpId, Link *link);
+	NodeInterfaceTraits_s get_nodeInterfaceTraits();
+	AttachedLink_s isExtLinkAttached();
+	AttachedLink_s isIntLinkAttached();
+	AttachedLink_s isDownLinkAttached();
+	AttachedLink_s isUpLinkAttached(Identity_s *infUpId);
+	int start_extInterface();
+	int stop_extInterface();
+	int start_intInterface();
+	int stop_intInterface();
+	bool isExtInterfaceRunning();
+	bool isIntInterfaceRunning();
+	int set_interfaceDomainLevel(DomainLevel infDomainLevel);
+	DomainLevel get_interfaceDomainLevel();
+	bool is_domainInterface();
+	bool check_ifVerticalLinkEndpoint(Identity_s *lowerInterfaceId);
+	int update_ownNodeTopInfo(MsgBody_ExtNodeTop_s *ownTopInfo);
+	int send_PDU(InterfaceType infType, GenericPDU_s *pdu);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_update_interface();
+	void CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor);
+	void CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop);
+	void CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo);
+	void CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo);
+	void CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo);
+	void CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo);
+	void CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data);
+	friend ostream &operator<<(ostream &stream, NodeInterface *ni);
+private:
+	InterfaceUpInfo_s *find_infUp(Identity_s *linkAbstId, Identity_s *superNodeId);
+};
+
+// CLASS NODETOPOLOGY
+
+struct NeighborNodeItem_s {
+	NeighborNodeItem_s *previousItem;
+	NeighborNodeInfo_s neighbor;
+	NeighborNodeItem_s *nextItem;
+};
+
+struct NodeTopologyItem_s {
+	NodeTopologyItem_s *previousNodeInf;
+	NodeInterface *nodeInterface;
+	bool linkBuilder;  // Denotes whether a superNode representing a domain where this node interface is present shall be responsible for link management between supernodes.
+	TickPoint_s linkBuilder_timeout;  // Provides the time after which link builder responsibility can be calculated
+	Link *attachedExtLink;
+	LinkEndpoint *localExtLinkEndpoint;
+	Link *attachedIntLink;
+	LinkEndpoint *localIntLinkEndpoint;
+	int currentNumberNeighbors;
+	NeighborNodeItem_s *firstNeighborItem;
+	NodeTopologyItem_s *nextNodeInf;
+};
+
+
+class NodeTopology : public CallbackSystem {
+	Identity identity;
+	Node *localNodeRef;
+	NodeTopologyItem_s *firstTopologyItem, *nextTopologyItem;
+	NodeInterface *currentNodeInterface;
+	int currentNumberNodeInterfaces;
+	TickPoint_s neighborTicks;
+	int callbackRef;
+	int nodeTopologyVersion; // Incremented each time the node topology is updated.
+	int refreshCount; // Reset each time nodeTopologyVersion is incremented, incremented after each EXTTOPOLOGY_INTERVAL
+	TickPoint_s lastTicksRead, ticksDiff; // Used to control when refreshCount shall be incremented.
+public:
+	void NodeTopology_init(Identity_s *id, Node *ownNodeRef);
+	void NodeTopology_delete();
+	int add_nodeInterface(NodeInterface *nodeInterface);
+	int remove_nodeInterface(NodeInterface *nodeInterface);
+	int add_extLink(NodeInterface *nodeInterface, Link *link, LinkEndpoint *localEndpoint);
+	int remove_extLink(NodeInterface *nodeInterface, Link *link);
+	int add_intLink(NodeInterface *nodeInterface, Link *link, LinkEndpoint *localEndpoint);
+	int remove_intLink(NodeInterface *nodeInterface, Link *link);
+	int update_neighbors(NodeInterface *nodeInterface, NeighborNodeInfo_s *neighbor);
+	int set_interfaceDomainLevel(NodeInterface *nodeInf, DomainLevel infDomainLevel);
+	DomainLevel get_interfaceDomainLevel(NodeInterface *nodeInf);
+	bool isNodeInf_installed(NodeInterface *nodeInf);
+	int get_currentNumberNodeInf();
+	NodeInterface *getNext_nodeInterface(bool reset);
+	NodeTopologyItem_s *getNext_nodeTopItem(bool reset);
+	NodeInterface *get_nodeInterface(Identity_s *linkId, Identity_s *nodeInfId);  // Returns the node interface having the specified internal or external link attached, ORhaving the specified identity. Otherwise returns 0.
+	NodeInterface *check_ifNeighborExists(Identity_s *nodeId);
+	bool check_ifLinkBuilder(NodeInterface * nodeInf);
+	int get_nodeTopVersion();
+	int get_refreshCount();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkTimeToLive();
+	void CALLBACK_checkNeighborInfo();
+	friend ostream &operator<<(ostream &stream, NodeTopology *nt);
+private:
+	NodeTopologyItem_s *find_nodeTopologyItem(NodeInterface *nodeInf);
+};
+
+// CLASS REMOTENODETOPOLOGY
+struct RemoteTopologyItem_s {
+	int version;
+	NodeInfo_s origNode;
+	NodeTopology_s nodeTopology;
+};
+
+struct RemoteNodeTopologyItem_s {
+	RemoteNodeTopologyItem_s *previousItem;
+	NodeInterface *nodeInf;  // The node interface for which the latest version of the nodeTopology was received
+	int refreshCount;
+	int reissueCount;  // Only set and recorded for the node itself, not received messages
+	int PDU_TTL;
+	TickPoint_s timeToLive;
+	RemoteTopologyItem_s remoteTopology;
+	RemoteNodeTopologyItem_s *nextItem;
+};
+
+class RemoteNodeTopology : public CallbackSystem {
+	Identity identity;
+	TickPoint_s remoteTicks;
+	int callbackRef;
+	RemoteNodeTopologyItem_s *firstTopologyItem, *nextTopologyItem;
+	int currentNumberNodeTopologies;
+	NodeTopology *nodeTopologyRef;
+	Node *nodeRef;
+public:
+	void RemoteNodeTopology_init(Identity_s *id, Node *nodeRef, NodeTopology *nodeTopRef);
+	void RemoteNodeTopology_delete();
+	int delete_remoteTopItem(Identity_s *nodeId);
+	int update_extNodeTopStatus(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo);
+	int reissue_extNodeTopStatus(NodeInterface *nodeInf, ReissueInfo_s *reissueInfo);
+	int update_ownNodeTopStatus(MsgBody_ExtNodeTop_s *ownNodTop);
+	RemoteTopologyItem_s *get_remoteTopItem(Identity_s *nodeId);
+	RemoteTopologyItem_s *getNext_remoteTopItem(bool reset);
+	int get_currentNumberNodeTopologies();
+	int get_currentVersion();  // Own node
+	int get_reissueCount(); // Own node
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkTimeToLive();
+	void CALLBACK_checkTopologyInfo();
+	void display_remoteNodeTopology(Identity_s nodeId);
+	friend ostream &operator<<(ostream &stream, RemoteNodeTopology *rt);
+private:
+	RemoteNodeTopologyItem_s *find_remoteTopItem(Identity_s *nodeId);
+	RemoteNodeTopologyItem_s *getNext_remoteNodeTopItem();
+	int add_remoteTopItem(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo);
+	int resend_PDU(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo);
+};
+
+// CLASS SORTEDTOPOLOGY
+struct RouteSegment_s {
+	RouteSegment_s *previousSegment;  // Not used at the moment
+	Identity_s entryNodeInfId;
+	Identity_s nodeId;
+	Identity_s exitNodeInfId;
+	RouteSegment_s *nextSegment;  // Not used at the moment
+};
+
+struct Route_s {
+	Identity_s destNodeId;
+	RouteSegment_s routeSegment[MAX_DOMAINRADIUS];
+	float routeScore;
+};
+
+struct SortedTierItem_s {
+	SortedTierItem_s *previousItem;
+	bool validated; // Only used during the update of the tiered topology
+	int lastVersion;
+	NodeInfo_s origNode;
+	RemoteTopologyItem_s *remoteNodeTop;
+	int numberRoutes;
+	Route_s routes[MAX_ROUTES];
+	SortedTierItem_s *nextItem;
+};
+
+struct SortedTierTopology_s {
+	SortedTierTopology_s *previousTier;  // Not used at the moment
+	int numberNodes;
+	SortedTierItem_s *firstTierListItem;
+	SortedTierTopology_s *nextTier;  // Not used at the moment
+};
+
+struct TierItem_s {
+	int tier;
+	SortedTierItem_s *tierItem;
+};
+
+struct TierNodeItem_s {
+	int tier;
+	RemoteTopologyItem_s *remoteNodeTop;
+};
+
+struct TierNeighborRef_s {
+	int thisInfOutNumber;
+	int nextInfInNumber;
+	int neighborNumber;
+};
+
+class SortedTopology : public CallbackSystem {
+	Identity identity;
+	TickPoint_s sortedTicks;
+	int callbackRef;
+	SortedTierTopology_s tierTopology[MAX_TIERS];
+	int currentNumberTiers, currentNumberTierItems;
+	Node *localNodeRef;
+	RemoteNodeTopology *remoteTopologyRef;
+public:
+	void SortedTopology_init(Identity_s *id, Node *nodeRef, RemoteNodeTopology *remTopRef);
+	void SortedTopology_delete();
+	TierNodeItem_s find_tierNodeItem(Identity_s *nodeId);
+	int get_currentNumberTierItems();
+	RouteSegment_s get_firstRouteSegment(Identity_s *destNodeId);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkTimeToLive();
+	int CALLBACK_update_tierTopology();
+	friend ostream &operator<<(ostream &stream, SortedTopology *st);
+private:
+	int delete_tierItem(TierItem_s tierItem);
+	TierItem_s check_tierLevel(RemoteTopologyItem_s *remoteTopItem);
+	bool check_innerTier(RemoteTopologyItem_s *remoteTopItem, int innerTier);  // Returns true if RemTopItem is a neighbor with a nodes in the innerTier
+	int move_tierItem(int currentTier, SortedTierItem_s *tierItem, int newTier);
+	SortedTierItem_s *insert_newSortedItem(int tier, RemoteTopologyItem_s *remoteTopItem);
+	TierItem_s find_tierItem(Identity_s *nodeId);
+	int calculate_routes();
+	TierNeighborRef_s find_nextOuterNeighbor(RemoteTopologyItem_s *remTopItem, int prevInfNumber, int prevNeighborNumber);
+	int add_route(Route_s *route);
+	void flush_allRoutes();
+};
+
+
+// CLASS CENTROID
+struct CentroidItem_s {
+	int version;
+	NodeInfo_s origNode;
+	CentroidStatus centroidStatus;
+	float score;
+	int domainRadius;
+	Identity_s currentCentroid;  // The node which this node (=origNode) has determined as being the current centroid of the domain which this node belongs to
+	int numberNodes;  // Number of nodes in the domain, i.e. number of nodes in the domainNodes array
+	CenDomainNode_s domainNodes[MAX_DOMAINSIZE]; // Only filled in when centroidStatus == I_CENTROID
+};
+
+struct RemoteCentroidItem_s {
+	RemoteCentroidItem_s *previousItem;
+	NodeInterface *nodeInf;  // The node interface for which the latest version of the Centroid was received
+	int refreshCount;
+	int reissueCount;  // Only set and recorded for the node itself, not received messages
+	int PDU_TTL;
+	TickPoint_s timeToLive;
+	CentroidItem_s centroidInfo;
+	TierNodeItem_s tierNodeItem;  // To make a reference to its location in the tiered topology
+	RemoteCentroidItem_s *nextItem;
+};
+
+struct OldDomain_s {
+	CenDomainNode_s domainNodes[MAX_DOMAINSIZE];
+	int oldDomainSize;
+	Identity_s centroidNodeId;
+	Identity_s superNodeId;
+};
+
+struct OverlapCentroid_s {
+	RemoteCentroidItem_s *centroid;
+	int overlapNodeIndex;  // Provides the index into the domainNodes array for the overlapCentroid
+};
+
+class Centroid : public CallbackSystem {
+	Identity identity;
+	bool stableCentroid;
+	int stableIterations;  // Should be at least 2!
+	int domainNodeDiffs;
+	TickPoint_s centroidTicks;
+	int callbackRef;
+	TickPoint_s lastTicksRead, ticksDiff;
+	RemoteCentroidItem_s *firstCentroidItem, *nextCentroidItem, *currentCentroid, *oldCentroid;  // First item is always the centroid status of this node
+	int nextDomainNodeIndex;
+	int currentNumberCentroids;
+	int networkNeighborhood;
+	int signature;
+	OldDomain_s oldDomain;
+	Node *nodeRef;
+	SortedTopology *sortedTopRef;
+	RemoteNodeTopology *remoteTopRef;
+	NodeTopology *nodeTopologyRef;
+public:
+	void Centroid_init(Identity_s *id, Node *nRef, SortedTopology *sortTopRef, RemoteNodeTopology *remTopRef, NodeTopology *nodeTopRef, int domainRadius);
+	void Centroid_delete();
+	int update_centroidStatus(NodeInterface *nodeInf, CentroidInfo_s *centroidInfo);
+	int reissue_centroidStatus(NodeInterface *nodeInf, ReissueInfo_s *reissueInfo);
+	void CALLBACK_update_centroids();
+	int get_centroidVersion();
+	int get_refreshCount();
+	int get_reissueCount();
+	CentroidItem_s *get_centroidStatus(Identity_s *id);
+	float get_centroidScore();
+	int get_netNeighborhood();
+	int get_currentNumberCentroids();
+	int get_currentNumberDomainNodes();
+	Identity_s *get_currentCentroid();
+	int get_domainNodeDiffs();
+	RemoteTopologyItem_s *getNext_domainNode(bool reset);
+	Identity_s getNext_domainNodeId(bool reset);
+	RemoteCentroidItem_s *getNext_remoteCentroidItem(bool reset);
+	bool is_stableCentroid();
+	bool compare_domainOverlap();
+	bool compare_domainTopOverlap();
+	Identity_s get_savedDomainSuperNode();
+	Identity_s get_savedDomainCentroidNode();
+	int saveDomain(Identity_s *nodeId, Identity_s *superNodeId);
+	void reset_domainNodeDiffs();  // Only to be used by the node
+	void reset_savedDomain();
+	bool check_ifDomainNode(Identity_s *nodeId);
+	int update_nodeInfDomainLevel();
+	void reset_nodeInfDomainLevel();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkTimeToLive();
+	friend ostream &operator<<(ostream &stream, Centroid *ce);
+private:
+	int check_topologyConsistency();
+	float calculate_centroidScore();
+	int calculate_centroidSignature();
+	bool check_centroidScores();
+	bool amICentroid();
+	bool amIStableCentroid();
+	RemoteCentroidItem_s *set_centroid();
+	bool set_domainNodes();  // Returns true if a change of domain nodes have occured since the last call of this function
+	OverlapCentroid_s check_listedElsewhere(Identity_s *nodeId, RemoteCentroidItem_s *lastReturned);
+	RemoteCentroidItem_s *find_remoteCentroidItem(Identity_s *id);
+	int add_remoteCentroidItem(NodeInterface *nodeInf, CentroidInfo_s *centroidInfo);
+	RemoteCentroidItem_s *findNearestCentroid();
+	int resend_PDU(NodeInterface *nodeInf, CentroidInfo_s *centroidInfo);
+};
+
+// CLASS LINKABSTRACTION
+class LinkAbstraction : public CallbackSystem {
+	Identity identity;
+	TickPoint_s linkAbstTicks;
+	int callbackRef;
+	LinkAbstInfo_s *firstLinkAbstraction, *nextLinkAbstraction;
+	int currentNumberLinkAbstractions;
+	Node *thisNode;
+	NodeTopology *nodeExtTopologyRef;
+public:
+	void LinkAbstraction_init(Identity_s *id, Node *nodeRef, NodeTopology *nodeExtTopRef);
+	void LinkAbstraction_delete();
+	int update_linkAbstractionStatus(Identity_s *infId, Identity_s *nodeId, LinkAbstractionInfo_s *linkAbstractionInfo);
+	int reissue_linkAbstractionStatus(NodeInterface *nodeInf, ReissueInfo_s *reissueInfo);
+	int get_currentNumberLinkAbst();
+	LinkAbstInfo_s *get_nextLinkAbst(Identity_s *horLinkId, Identity_s *superNodeId, bool reset);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkTimeToLive();
+	friend ostream &operator<<(ostream &stream, LinkAbstraction *la);
+private:
+	LinkAbstInfo_s *add_linkAbstraction(Link *horLink, bool linkBuilder, Identity_s *origNodeId, string nameTag);
+	LinkAbstInfo_s *remove_linkAbstraction(Identity_s *linkId);
+	LinkAbstMsg_s *add_underlyingLink(Link *horLink, Identity_s *linkId, NodeInfo_s *sourceNode);
+	LinkAbstMsg_s *remove_underlyingLink(Link *horLink, Identity_s *linkId);
+	int add_peeringNode(Link *horLink, Identity_s *linkId, Identity_s *nodeId);
+	int remove_peeringNode(Link *horLink, Identity_s *linkId, Identity_s *nodeId);
+	LinkAbstInfo_s *checkIfLinkAbst_exists(Link *horLink);
+	LinkAbstInfo_s *find_linkAbstInfo(Identity_s *horLinkId, Identity_s *underlyingLinkId, Identity_s *superNodeId);
+	LinkAbstMsg_s *find_underlyingLink(LinkAbstInfo_s *linkAbstInfo, Identity_s *underlyingLinkId);
+	void CALLBACK_update_linkAbstraction();
+};
+
+
+// CLASS SWITCHCORE
+struct SwitchCoreInf_s {
+	SwitchCoreInf_s *previousSwitchInf;
+	SwitchCoreInterface *switchInf;
+	SwitchCoreInf_s *nextSwitchInf;
+};
+
+struct SwitchCoreInfItem_s {
+	SwitchCoreInfItem_s *previousItem;
+	SwitchCoreInterface *switchCoreInf;
+	LinkEndpoint *linkEndpoint;
+	SwitchCoreInfItem_s *nextItem;
+};
+
+struct SwitchCNodeInfItem_s {
+	SwitchCNodeInfItem_s *previousItem;
+	NodeInterface *nodeInf;
+	LinkEndpoint *linkEndpoint;
+	SwitchCNodeInfItem_s *nextItem;
+};
+
+struct InternalLinkListItem_s {
+	InternalLinkListItem_s *previousItem;
+	Link *internalLink;
+	SwitchCoreInfItem_s *firstSwitchCoreInfItem;
+	SwitchCNodeInfItem_s *firstNodeInfItem;
+	InternalLinkListItem_s *nextItem;
+};
+
+
+class SwitchCore : public Entity {
+	int maxInf;
+	int currentNumberInf;
+	Node *ownNodeRef;
+	TickPoint_s switchCoreTicks;
+	int callbackRef;
+	SwitchCoreInf_s *firstSwitchInfItem;
+	InternalLinkListItem_s *firstIntLinkItem;
+	SwitchCoreRes switching;
+public:
+	void SwitchCore_init(Identity_s *id, SwitchCoreTraits_s switchCoreTraits, Node *nodeRef, unsigned int ttl);
+	void SwitchCore_delete();
+	int install_switchInf(SwitchCoreInterface *switchInf);
+	int uninstall_switchInf(SwitchCoreInterface *switchInf);
+	bool isSwitchInf_installed(SwitchCoreInterface *switchInf);
+	SwitchCoreInterface *find_switchInf(Link *intLink);
+	int get_currentNumberSwitchInf();
+	SwitchCoreTraits_s get_switchCoreTraits();
+	int attach_link(SwitchCoreInterface *switchInf, Link *link, LinkEndpoint *linkEndpoint);
+	int detach_link(SwitchCoreInterface *switchInf, Link *link);
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_update_switchCore();
+	friend ostream &operator<<(ostream &stream, SwitchCore *sc);
+private:
+	InternalLinkListItem_s *createNewSwitchInf(NodeInterface *nodeInf); // Create new interface, and the internal link, and connects it to the node interface
+};
+
+// CLASS NODE
+struct NodeCoordinates_s {
+	int xCoord;  // Horizontal direction, range -2G - +2G
+	int yCoord;  // See xCoord
+	int zCoord;  // Vertical direction, range, -2G - +2G
+};
+
+struct SuperNodePDU_Status_s {
+	int currentVersion;
+	int refreshCount;
+	int reissueCount;  // Only set and recorded for the node itself, not received messages
+	int PDU_TTL;
+	NodeInterface *nodeInf;  // The interface at which the latest PDU was received
+	TickPoint_s timeToLive;
+	Node *superNodeRef;
+};
+
+class Node : public Entity {
+	NodeTopology nodeTopology;
+	RemoteNodeTopology remoteExtNodeTopology;
+	SortedTopology sortedTopology;
+	Centroid centroid;
+	SwitchCore switchCore;
+	LinkAbstraction linkAbstraction;
+	NodeInfo_s myNodeInfo;
+	int currentNoInterfaces;
+	TickPoint_s nodeTicks;
+	TickPoint_s lastTicksRead, ticksDiff;
+	int callbackRef;
+	Node *superNode, *subNode, *oldSuperNodeStatus[MAX_OLDSUPERNODES];  // The subNode points to the current centroid in the underlying topology. NB!!! Only one superNode supported at the moment
+	bool newSuperNode;
+	Identity_s mySuperNodePDUProvider, myOldSuperNodePDUProvider;
+	SuperNodePDU_Status_s superNodePDUStatus;
+	NodeCoordinates_s currentPos;
+	ObjSelector objPrint;
+	ReissueInfo_s reissueLog[MAX_REISSUELOG];
+	int reissueLogIndex, nextReissueLogIndex;  // Pointing at the next to be stored, or retrieved
+public:
+	void Node_init(Identity_s *id, int domainRadius, Node *centroidNode, NodeTraits_s nodeTraits, NodeCoordinates_s coord, unsigned int ttl, Identity_s *liveKeeper);
+	void Node_delete();
+	int install_nodeInf(NodeInterface *nodeInf);
+	int uninstall_nodeInf(NodeInterface *nodeInf);
+	int attach_extLink(NodeInterface *nodeInf, Link *link, LinkEndpoint *linkEndpoint);
+	int detach_extLink(NodeInterface *nodeInf, Link *link);
+	int attach_intLink(NodeInterface *nodeInf, SwitchCoreInterface *switchInf, Link *link, LinkEndpoint *linkEndpointInfInt, LinkEndpoint *linkEndpointSwitchInf); 
+	int detach_intLink(NodeInterface *nodeInf, SwitchCoreInterface *switchInf, Link *link);  // May also detach the link from the switch core interface
+	int attach_verDownLink(NodeInterface *nodeInf, Link *link, LinkEndpoint *linkEndpoint);
+	int detach_verDownLink(NodeInterface *nodeInf, Link *link);
+	int reissueMsgMgmt(NodeInterface *nodeInf, ReissueInfo_s * reissueInfo);
+	int reissueMsgMgmt_linkAbst(ReissueInfo_s * reissueInfo);
+	int reissue_superNodeStatus(NodeInterface *nodeInf, ReissueInfo_s *reissueInfo);
+	int update_neighborStatus(NodeInterface *nodeInf, NeighborNodeInfo_s *neighborInfo);
+	int update_extNodeTopStatus(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo);
+	int update_ownNodeTopStatus(MsgBody_ExtNodeTop_s *ownTopInfo);
+	int update_centroidStatus(NodeInterface *nodeInf, CentroidInfo_s *centroidInfo);
+	int update_superNodeStatus(NodeInterface *nodeInf, SuperNodeInfo_s *superNodeInfo);
+	int update_linkAbstractionStatus(Identity_s *infId, Identity_s *nodeId, LinkAbstractionInfo_s *linkAbstractionInfo);
+	int pass_linkAbstractionInfo(Identity_s *infId, Identity_s *nodeId, LinkAbstractionInfo_s *linkAbstractionInfo);
+	bool check_ifLinkBuilder(NodeInterface *nodeInf);
+	bool check_ifDomainNode(Identity_s *nodeId);
+	bool check_databaseConsistency();
+	bool check_domainConsistency();
+	int get_currentNumberNodeInf();
+	NodeInterface *getNext_nodeInterface(bool reset);
+	NodeTopologyItem_s getNext_nodeTopItem(bool reset);
+	NodeInterface *get_nodeInterface(Identity_s *linkId, Identity_s *nodeInfId); // Will return the node interface to which the specified link is attached (can be either an internal or external link), OR having the specified ID.
+	RemoteTopologyItem_s *getNext_remoteTopItem(bool reset);
+	RemoteTopologyItem_s *getNext_domainNode(bool reset);
+	Identity_s getNext_domainNodeId(bool reset);
+	int get_nodeTopVersion();  // From NodeTopology
+	int get_extTopRefreshCount();
+	int get_extTopReissueCount();
+	int get_centroidVersion();
+	CentroidItem_s *get_centroidStatus(Identity_s *id);
+	float get_centroidScore();
+	int get_centroidRefreshCount();
+	int get_centroidReissueCount();
+	int get_currentNumberDomainNodes();
+	RouteSegment_s get_firstRouteSegment(Identity_s *destNodeId);
+	int get_ownNodeTopVersion();  // From RemoteNodeTopology
+	int get_netNeighborhood();
+	NodeInfo_s *get_myNodeInfo();
+	Identity_s get_superNodePDUProvider(bool old);
+	Identity_s get_superNodeId();
+	SuperNodePDU_Status_s get_superNodePDUStatus();
+	NodeInfo_s *get_superNodeInfo();
+	LinkAbstInfo_s *get_nextLinkAbstFromSN(Identity_s *linkId, Identity_s *superNodeId, bool reset);
+	ReissueInfo_s *get_nextReissueReqFromSN(GenericMsgType msgType, Identity_s *linkId, bool reset);
+	SwitchCoreInterface *find_switchCoreInf(Link *intLink);
+	Node *get_subNodeRef();
+	int set_coordinates(NodeCoordinates_s coord);
+	NodeCoordinates_s get_coordinates();
+	void CALLBACK_tickZero(void *parameters, int secret);
+	void CALLBACK_checkNodeStatus();
+	int update_centroidNode(Node *centroidNode);
+	void printMe (ObjSelector obj);
+	friend ostream &operator<<(ostream &stream, Node *no);
+private:
+	int update_nodeTopology();
+	Link *find_linkAbstraction(Identity_s *linkId);
+	LinkAbstInfo_s *get_nextLinkAbst(Identity_s *linkId, Identity_s *superNodeId, bool reset);
+	ReissueInfo_s *get_nextReissueReq(GenericMsgType msgType, Identity_s *linkId, bool reset);
+	Identity_s check_mySuperNodePDUProvider(Identity_s *superNodePDU_origId);
+	int resend_PDU(NodeInterface *nodeInf, SuperNodeInfo_s *superNodeInfo);
+};
+
+// CLASS SERVICE
+/*
+struct GenericContractParams_s {
+	int serviceReqRate; // Expressed as number of requests per second
+	// Service Scope is not part if implementation as it is implicitly encoded through the SSP and Strata concept, and in the the implementation through the Node.
+	float availability; // Expressed as a percentage, highest theoretical value is 100;
+	float successRate; // Expressed as a percentage, highest theoretical value is 100;
+};
+
+struct GenericServiceItem_s {
+	GenericServiceItem_s *previousItem;
+	ServiceId service;
+	GenericContractParams_s contract; // Not used for the black list
+	GenericServiceItem_s *nextItem;
+};
+
+class ServiceProvider {
+	Identity_s identity;
+	GenericServiceItem_s *firstHostedService;  // If no-one listed, ALL services are supported except for those in the black list
+	GenericServiceItem_s *firstBlackListedService; // All those listed here can't be accessed, except for those listed in hostedServices
+public:
+	void Service_init(Identity_s *id);
+	int add_service(ServiceId service, GenericContractParams_s contract);
+	int remove_service(ServiceId service);
+	int add_blacklistedService(ServiceId, service);
+	int remove_blacklistedService(ServiceId service);
+	ServiceMsg Service_req(ServiceId service, ServicePrim primitive, Identity_s *originId, Identity_s *destId, int originServiceTransactionId);
+	ServiceMsg Sevice_rsp(ServiceId service, ServicePrim primitive, Identity_s *responderId, int, serviceTransactionIf, int originServiceTransactionId, int responderServiceTransactionId); // The Transaction IDs must never be repeated for one and the same Origin/Responder ID 
+};
+
+class ServiceUser {
+public:
+	void CALLBACK_service_ind(ServiceId service, ServicePrim primitive, Identity_s *originId, Identity_s *destId, int serviceTransactionId, int originServiceTransactionId);
+	void CALLBACK_sevice_cfm(ServiceId service, ServicePrim primitive, Identity_s *responderId, int serviceTransactionId, int originServiceTransactionId, int responderServiceTransactionId, ServiceMsg outcome)
+};
+*/
+
+/*
+
+// CLASS STRATUMSERVICEPOINT
+struct StratumContractParams_s {
+	GenericContractParams_s contractParams;
+	// Further params might be defined
+};
+
+class StratumServicePoint : public Service {
+	void StratumServicePoint_init (Identity_s *id, StratumContractParams_s stratumContractParams);
+};
+
+// CLASS STRATUMNODE
+class StratumNode : public Node {
+	Resource resource[MAX_RESOURCES];
+public:
+	void StratumNode_init(Identity_s *id, int maxInf);
+};
+
+// CLASS STRATUM
+class Stratum : public Node {
+};
+
+// CLASS MACHINESTRATUMSERVICE
+struct MachineStratumContractParams_s {
+	StratumContractParams_s stratumContractParams;
+	// Further params might be defined
+};
+
+struct MachineStratumSDU_s {
+	Stratum originatorStratum;
+};
+struct MachineStratumCallbacks_s {
+	void *machineStratum_receiveData(MachineStratumSDU_s sdu);
+};
+
+struct NodeRoute_s {
+};
+
+struct InfObject_s {
+};
+
+class MachineStratumServicePoint : public Service {
+public:
+	void MachineStratumServicePoint_init(MachineStratumContractParams_s contractParams, MachineStratumCallbacks_s callback);
+	int MachineStratumServicePoint_sendData(MachineStratumSDU_s *sdu, NodeRoute_s *route, InfObject_s *infObject);
+};
+*/
+
+// CLASS SYSTEM
+
+// DEFINITIONS
+#define SIZE_SYSEVENTLIST 8192
+#define SIZE_SYSTICKQUEUE 8192
+#define SIZE_ERRORLOG 128
+#define SIZE_TRACELOG 16384
+#define MAX_RANDOMNUMBER 4294967295
+#define MAX_NODEINFTYPES 16
+#define MAX_SWITCHCOREINFTYPES 16
+#define MAX_SWITCHCORETYPES 16
+#define MAX_NODETYPES 16
+#define MAX_LINKENDPOINTTYPES 16
+#define MAX_LINKTYPES 16
+#define MAX_CLUSTERTYPES 16
+#define MAX_CLUSTERSIZE 100
+#define CLUSTER_CONNECTIVITY 2  // Average number of neighbors for each node in a cluster
+#define MAX_NODEINSTANCES 256
+#define MAX_LINKINSTANCES 256
+#define MAX_CEASEDLIST 64
+#define SYS_MAX_TICKBREAKPOINTS 8
+#define SYS_MAX_TICKPOINT 18000000000000000000
+#define SYS_MAX_PROTTRACES 1024
+#define SYS_MAX_PROTTRACEEVENTS MAX_DOMAINRADIUS*MAX_NODEINF*MAX_NODEINF*2
+#define SYS_MAX_IDARRAY MAX_DOMAINSIZE+1  // To also accommodate for the "stop" identity
+#define SYS_MAX_POLLNODES 32
+#define SYS_MAX_POLLS 8
+
+// ENUMS
+enum ClusterTopology {SYS_TOP_RANDOM, SYS_TOP_STAR_ONELINK, SYS_TOP_STAR, SYS_TOP_STAR_RED, SYS_TOP_MESHED_RANDOM, SYS_TOP_CUSTOM};
+enum SYS_LogScope {SYS_LS_ALL, SYS_LS_CONTROL, SYS_LS_DATA, SYS_LS_UNDEFINED};
+enum SYS_LogLevel {SYS_LL_ALL, SYS_LL_LOW, SYS_LL_MEDIUM, SYS_LL_HIGH, SYS_LL_UNDEFINED};
+enum SYS_TraceEventType {SYS_TET_THREAD, SYS_TET_FUNC, SYS_TET_EVENT, SYS_TET_ERROR};
+enum SYS_EntityStatus {SYS_SYSTEM_CREATED, SYS_NW_CREATED, SYS_NW_REQ_DELETION};
+enum SYS_BreakOnError {SYS_ERR_NOBREAK, SYS_ERR_SOFT, SYS_ERR_HARD, SYS_ERR_BREAKALL};
+
+// STRUCTURES
+struct SYS_NodeInterfaceType_s {
+	string extNodeInfType;
+	NodeInterfaceTraits_s nodeInfTraits;
+};
+
+struct SYS_SwitchCoreInterfaceType_s {
+	string extSwitchCoreInfType;
+	SwitchCoreInterfaceTraits_s switchCoreInfTraits;
+};
+
+struct SYS_SwitchCoreType_s {
+	string extSwitchCoreType;
+	SYS_SwitchCoreInterfaceType_s *switchCoreInfType;
+	SwitchCoreTraits_s switchCoreTraits;
+};
+
+struct SYS_NodeType_s {
+	string extNodeType;
+	int domainRadius;
+	SYS_NodeInterfaceType_s *nodeInfType[MAX_NODEINFTYPES];
+	int numberNodeInfTypes;
+	SYS_SwitchCoreType_s *switchCoreType;
+	NodeTraits_s nodeTraits;
+};
+
+struct SYS_LinkEndpointType_s {
+	string extLinkEndpointType;
+	LinkEndpointTraits_s linkEndpointTraits;
+};
+
+struct SYS_LinkType_s {
+	string extLinkType;
+	SYS_LinkEndpointType_s *linkEndpointType[MAX_LINKENDPOINTTYPES];
+	int numberLinkEndpointTypes;
+	LinkTraits_s linkTraits;
+};
+
+struct SYS_ClusterType_s {
+	string extClusterType;
+	SYS_NodeType_s *nodeType[MAX_NODETYPES];
+	int numberNodeTypes;
+	SYS_LinkType_s *linkType[MAX_LINKTYPES];
+	int numberLinkTypes;
+	ClusterTopology topology;
+	int maxClusterSize;
+	int clusterConnectivity;
+};
+
+struct SYS_NodeInstance_s {
+	SYS_NodeInstance_s *prevInst;
+	SYS_NodeType_s *NodeTypeRef;
+	SYS_EntityStatus entStatus;
+	Identity_s nodeId;
+	Node *nodeRef;
+	SYS_NodeInstance_s *nextFree;
+	SYS_NodeInstance_s *nextInst;
+};
+
+struct SYS_LinkInstance_s {
+	SYS_LinkInstance_s *prevInst;
+	SYS_LinkType_s *LinkTypeRef;
+	SYS_EntityStatus entStatus;
+	Identity_s linkId;
+	Link *linkRef;
+	SYS_LinkInstance_s *nextFree;
+	SYS_LinkInstance_s *nextInst;
+};
+
+struct SYS_CeasedEnt_s {
+	Identity_s id;
+	NodeInfo_s nodeInfo;
+	LinkInfo_s linkInfo;
+};
+
+struct SYS_RunTimError_s {
+	TickPoint_s tickPoint;
+	Identity_s source;
+	string classFunction;
+	string reason;
+	SYS_BreakOnError errorLevel;
+};
+
+struct SYS_TraceEvent_s {
+	TickPoint_s tickPoint;
+	SYS_TraceEventType traceType;
+	SYS_RunTimError_s *errorRef;  // Only valid in case the traceType is n Error
+	Identity_s sourceId;
+	Identity_s entityId;  // Must be either of type LINK or NODE
+	DomainLevel domainLevel;  // Only valid in case entityId.type = NODE
+	string comment;
+	bool i_valValid;
+	int i_value;
+	bool f_valValid;
+	float f_value;
+	bool b_valValid;
+	bool b_value;
+	Identity_s idArray[SYS_MAX_IDARRAY];
+};
+
+struct SYS_ProtTraceEvent_s {
+	DataDirection pduDir;
+	PDU_Address_s nodeHop;
+	TickPoint_s tickPoint;
+	int PDU_TTL;
+};
+
+struct SYS_ProtTrace_s {
+	Identity_s *origNodeFilter;  // A filter mechanism, If not 0, it will capture PDUs originated only from this node
+	GenericMsgType msgTypeFilter; // A filter mechanism, if set to GENMSG_UNDEFINED it will capture, if set to e.g. CENTROID it will just capture those messages as well as the refreshes.
+	PDU_Address_s origNode;
+	TickPoint_s tickPoint;
+	GenericMsgType msgType;
+	int protEventIndex;
+	SYS_ProtTraceEvent_s protEvent[SYS_MAX_PROTTRACEEVENTS];
+};
+	
+struct SYS_Event_s {
+	SYS_Event_s *prevFree;
+	SYS_Event_s *prevEvent;
+	CallbackSystem *callback;
+	void *params;
+	CallbackId callbackId;
+	int secret;
+	int eventRef;
+	SYS_Event_s *nextEvent;
+	SYS_Event_s *nextFree;
+};
+
+struct SYS_TickEvent_s {
+	SYS_TickEvent_s *prevFree;
+	SYS_TickEvent_s *prevTick;
+	TickPoint_s tickTime;  // The absolute time in ticks at which this TickEvent shall be triggered 
+	SYS_Event_s *firstEvent;
+	SYS_Event_s *lastEvent;
+	SYS_TickEvent_s *nextTick;
+	SYS_TickEvent_s *nextFree;
+};
+
+struct SYS_PollNode_s {
+	string pollName;
+	TickPoint_s startPoll;  // If set to 0, the poll is not active;
+	TickPoint_s closePoll;  // If set to 0, the poll is not active
+	TickPoint_s pollFrequency;  // If set to 0, this is not used, otherwise it indicates the poll frequency
+	TickPoint_s nextPoll;  // If set to 0, this is not used, otherwise it indicates tickpoint for next poll.
+	int loggedTraceTailCopy;  // Used for scanning the traceEvent list
+	Node *nodeRef[SYS_MAX_POLLNODES];
+};
+
+class System : public Entity {
+	SYS_Event_s sysEventList[SIZE_SYSEVENTLIST];
+	SYS_Event_s *firstFreeEvent;
+	SYS_TickEvent_s sysTickQueue[SIZE_SYSTICKQUEUE];
+	SYS_TickEvent_s *firstFreeTickEvent, *nextTickEvent, *lastTickEvent;
+	int eventRefCounter;
+	SYS_RunTimError_s loggedError[SIZE_ERRORLOG];
+	int loggedErrorHead, loggedErrorTail, currentNumberErrors;
+	SYS_TraceEvent_s loggedTrace[SIZE_TRACELOG];
+	int loggedTraceHead, loggedTraceTail, currentNumberTraceEvents;
+	SYS_ProtTrace_s *protTrace[SYS_MAX_PROTTRACES];
+	int protTraceIndex;
+	SYS_PollNode_s nodePoll[SYS_MAX_POLLS];
+	SYS_LogScope logScope;
+	SYS_LogLevel logLevel;
+	bool roll_errorLog;
+	TickPoint_s currentTickPoint, nextTickPoint;
+	TickPoint_s tickBreakpoint[SYS_MAX_TICKBREAKPOINTS];
+	int tickBreakpointIndex;
+	unsigned int currentNumberTickEvents, currentNumberEvents;
+	unsigned int seed, controlNumber, addNumber, randomNumber;
+	SYS_NodeInterfaceType_s nodeInterfaceType[MAX_NODEINFTYPES];
+	int numberNodeInfTypes;
+	SYS_SwitchCoreInterfaceType_s switchCoreInterfaceType[MAX_SWITCHCOREINFTYPES];
+	int numberSwitchCoreInfTypes;
+	SYS_SwitchCoreType_s switchCoreType[MAX_SWITCHCORETYPES];
+	int numberSwitchCoreTypes;
+	SYS_NodeType_s nodeType[MAX_NODETYPES];
+	int numberNodeTypes;
+	SYS_LinkEndpointType_s linkEndpointType[MAX_LINKENDPOINTTYPES];
+	int numberLinkEndpointTypes;
+	SYS_LinkType_s linkType[MAX_LINKTYPES];
+	int numberLinkTypes;
+	SYS_ClusterType_s clusterType[MAX_CLUSTERTYPES];
+	int numberClusterTypes;
+	SYS_NodeInstance_s nodeInstance[MAX_NODEINSTANCES], *nextFreeNodeInst, *lastNodeCreated;
+	SYS_LinkInstance_s linkInstance[MAX_LINKINSTANCES], *nextFreeLinkInst, *lastLinkCreated;
+	SYS_CeasedEnt_s ceasedEnt[MAX_CEASEDLIST];
+	int numberNodeInstances, numberLinkInstances, lastCeasedEnt;
+	bool stopSimulation;
+	ofstream *testOut;
+public:
+	void System_init(Identity_s *id, ofstream &out);
+	int readTestDefinitions(FILE *testFileRef, ofstream &out);
+	int runSimulation(FILE *testFileRef, ofstream &out);
+	int ticksQueue(CallbackSystem *callback, void *parameters, TickPoint_s ticks, CallbackId cb, int secret);
+	int delete_ticksQueueEvent(int eventRef);
+	TickPoint_s getTicks();
+	TickPoint_s msToTick(unsigned int milliSeconds);
+	unsigned int ticksToMs(TickPoint_s ticks);
+	TickPoint_s addTicks(TickPoint_s ticks1, TickPoint_s ticks2);
+	TickPoint_s subTicks(TickPoint_s ticks1, TickPoint_s ticks2);
+	int runtimerror(Identity_s *id, string classFunction, string reason, SYS_BreakOnError errorLevel);
+	TickPoint_s jitterbug(TickPoint_s ticks);  // Will add a jitter to the ticks value and then return this value.
+	void threadTrace(Identity_s *sourceId, Identity_s *entityId);
+	void funcTrace(string classFunction);
+	void eventTrace(Identity_s *sourceId, Identity_s *entityId, SYS_LogLevel level, string comment, int *i_val, float *f_val, bool *b_val, Identity_s *idArray);  // idArray points to an array of IDs which must terminate with an ID where type = "INVALID" and/or the name bneing reset.
+	void *init_protTrace(GenericPDU_s *pdu, Identity_s *origNode, GenericMsgType msgType);  // Returns a void pointer though it points to a SYS_ProTrace struct in case protocolTrace is TRUE
+	int report_protTraceEvent(Identity_s *nodeId, Identity_s *nodeInfId, DataDirection dataDir, GenericPDU_s *pdu);
+	void breakExecution(TickPoint_s tickPoint);
+	SYS_LogScope get_logScope();
+	SYS_LogLevel get_logLevel();
+	int report_entityCreation(Identity_s *origId, Identity_s *id, Entity *enRef);
+	int report_entityDeletion(Identity_s *origId, Identity_s *id, NodeInfo_s *nodeInfo, LinkInfo_s *linkInfo);  // Either a node or a link can be reported, and thus either of nodeInfo or linkInfo is 0
+	int req_entityDeletion(Identity_s *id, Entity *entRef);
+	string find_nodeExtName(Identity_s *id);
+	string find_linkExtName(Identity_s *id);
+	NodeInfo_s *get_nodeInfo(Identity_s *id);
+	LinkInfo_s *get_linkInfo(Identity_s *id);
+	void logNode(Node *nodeRef, ObjSelector obj);
+	void CALLBACK_tickZero(void *parameters, int secret);
+private:
+	SYS_TickEvent_s *findTickQueuePoint(TickPoint_s ticks);
+	void progressTicksQueue();
+	void randomNumberInit();
+	unsigned int generate_randomNumber();
+	unsigned int randomRotateNumber(Direction rotateDir, unsigned int number, unsigned int shift);
+	int readSysConst(FILE *testFileRef);
+	int readNodeInterfaceType(FILE *testFileRef);
+	int readSwitchCoreInterfaceType(FILE *testFileRef);
+	int readSwitchCoreType(FILE *TestFileRef);
+	int readNodeType(FILE *testFileRef);
+	int readLinkEndpointType(FILE *testFileRef);
+	int readLinkType(FILE *testFileRef);
+	int readClusterType(FILE *testFileRef);
+	SYS_SwitchCoreInterfaceType_s *find_switchCoreInfType(string type);
+	SYS_SwitchCoreType_s *find_switchCoreType(string type);
+	SYS_NodeInterfaceType_s *find_nodeInfType(string type);
+	SYS_NodeType_s *find_nodeType(string type);
+	SYS_LinkEndpointType_s *find_linkEndpointType(string type);
+	SYS_LinkType_s *find_linkType(string type);
+	int executeCommands(FILE *testFileRef, ofstream &out);
+	SYS_NodeInstance_s *createNode(FILE *testFileRef);
+	SYS_LinkInstance_s *createLink(FILE *testFileRef);
+	SYS_LinkInstance_s *attachLink(FILE *testFileRef);
+	int setTestFlags(FILE *testFileRef);
+	int createCluster(FILE *testFileRef);
+	int startNodeInf(FILE *testFileRef);
+	int stopNodeInf(FILE *testFileRef);
+	int pollNodeStatus(FILE *testFileRef);
+	void chk_log_polls(ofstream &out);
+	void remove_fromNodePolls(Node *nodeRef);
+	SYS_NodeInstance_s *find_nodeInst(string extName, Identity_s *id);  // Id is optional parameter, extname might be "INVALID"
+	SYS_LinkInstance_s *find_linkInst(string extName, Identity_s *id);  // See above
+	int set_logScope(SYS_LogScope logSc);
+	int set_logLevel(SYS_LogLevel logLvl);
+	bool check_protTraceFilter(SYS_ProtTrace_s *protTraceRef, GenericPDU_s *pdu);
+	int logDefinitions(ofstream &out);
+	int logErrorLog(ofstream &out);
+	int logTraceEvents(ofstream &out);
+	void errorTrace(SYS_RunTimError_s *errorRef);
+	int performLogging();
+	void logTopology(ofstream &out);
+	void logProtTrace(ofstream &out);
+	void logCeasedEnt(ofstream &out);
+	void logNodePolls(int nodePollIndex, int loggedTraceTailCopy, ofstream &out);
+};
+
+// CLASS ANALYZE
+#define ANA_MAX_NODESHORTLIST 1024
+#define ANA_MAX_LINKSHORTLIST 1024
+#define ANA_MAX_PLOTCOLUMNS 32
+
+struct ANA_AnalyzeFilter_s  {
+	DomainLevel highestLevel;
+	DomainLevel lowestLevel;
+	ObjSelector selector;
+};
+
+class Analyze {
+	Identity identity;
+	NodeInfo_s nodeShortList[ANA_MAX_NODESHORTLIST];
+	LinkInfo_s linkShortList[ANA_MAX_LINKSHORTLIST];
+	int lastStoredNodeListItem, numberStoredNodeListItems;
+	int lastStoredLinkListItem, numberStoredLinkListItems;
+public:
+	void Analyze_init(Identity_s *id);
+	void Analyze_delete();
+	int make_plotFile(ifstream &in, ANA_AnalyzeFilter_s analFilter, ofstream &outPlot);
+	int analyze_centroid_SN(ifstream &in, ANA_AnalyzeFilter_s analFilter, ofstream &centroid_SN_table);
+	int extract_nodeLogs(ifstream &in, ANA_AnalyzeFilter_s analFilter, ofstream &nodeLogs);
+private:
+	NodeInfo_s *store_nodeListItem(NodeInfo_s *nodeInfo);
+	LinkInfo_s *store_linkListItem(LinkInfo_s *linkInfo);
+	NodeInfo_s *find_nodeListItem(Identity_s *nodeId);
+	LinkInfo_s *find_linkListItem(Identity_s *linkId);
+	int find_columnPosition_plotFile(string reportComment);
+	int find_eventIndex_centroid_SN(string reportComment);
+};
+
+// GLOBAL CLASS/VARIABLE DECLARATIONS
+extern Etcetera *etcFunctions;
+extern GlobalName *globalNameSpace;
+extern DomainLevelAlgebra *domainLevelAlg;
+extern System *SYSTEM;
+extern unsigned __int64 TICKS_RESOLUTION;
+extern SYS_BreakOnError SYS_breakOnError;
+extern bool SYS_threadTrace, SYS_funcTrace, SYS_eventTrace, SYS_funcSysTrace, SYS_traceFile, SYS_deleteObjects, SYS_protTrace;
+extern void FORCE_EXIT(ofstream &out);
+/* TODO-list
+- Check all input from text.txt re new definition of AttachmentpointTraits/Res, InterfaceRes and LinkEndpointRes and its implementation in System
+- AttachmentspointTraits shall be checked for when attaching nodes/links to see that they match.
+- Centroid's refreshCount updates at several places
+- TTLs for EXT_TOPOLOGY, CENTROID and SUPERNODE shall be limited to reach network neighborhood
+- Ensure only domain nodes gets a "key" (i.e. the supernode ref) to the domain
+- Centroidscore only calculated within the network neighborhood
+- Routes only calculated to nodes being within the domainradius (might already be supported...)
+- Support for the case when a node interface has beighbors which may belong to the same domain, or to other domains. As it is now, all neighbors must either belong to the same domain, or to ONE other domain.
+- Support for the case non-equal domain radius, and even dynamic domain radius
+- Routes only to be calculated for nodes within domain radius
+- Avoid broadcasting of messages with no neighbors being alive
+- The general poll interval is interlinked with REFRESH messages in that refreshCount is only updated when a poll is done which might result in that redundat REFRESH messages are being sent (filtered at first receiving node)
+- Should be checked against linkTraits whether a new link endpoint can be added, NOT against MAX_LINKENDPOINTS
+- Take care of the case when linkBuilder role is changing, especially when handed over to a peering domain (e.g. how to deal with link abstractions that were once created by the domain being the linkBuilder)
+- How various are being deleted and by whom when a node is deleted needs further thinking
+- Need for periodically sending the full messages and not only REFRESH to accomodate for new nodes (now a little inconsistent as a SUPERNODE_REFRESH can basically cover up for SUPERNODE messages)
+- Need to secure that caretaker for a Supernode can only be overtaken by a node if it has the (previous) key for the domain
+*/
