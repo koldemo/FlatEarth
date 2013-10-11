@@ -1,0 +1,2864 @@
+#include <iostream>
+#include <string>
+#include <new>
+using namespace std;
+
+#include "C:\Users\CLONEZILLA\Documents\Visual Studio 2008\Projects\Netcell_test\Netcell_test\definitions.h"
+
+// CLASS PDU_QUEUE FUNCTIONS
+void PDU_Queue::PDU_Queue_init(Identity_s *id, QueueDir direction, int qLen, unsigned int ttl, GenericProtocol *genProtRef) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("PDU_Queue, init\n");}
+	int i;
+	QueueItem_s *qItem1, *qItem2;
+
+	Entity_init(id, ttl, 0);
+	queueHead = queueTail = 0;
+	queueDir = direction;
+	maxQueueLength = qLen;
+	currentQueueLength = 0;
+	protRef = genProtRef;
+	callbackRef = -1;
+
+	// Allocate space for the entire queue
+	qItem2 = 0;
+
+	for (i = 0; i < maxQueueLength; i++) {
+		
+		try {
+			qItem1 = new QueueItem_s;
+		} catch (bad_alloc xa) {
+			SYSTEM->runtimerror(id, "PDU_Queue_init", "memory_allocation_failure", SYS_ERR_HARD);
+		}
+
+		qItem1->previousItem = qItem2;
+
+		if (qItem2 != 0) {
+			qItem2->nextItem = qItem1;
+		}
+		else {
+			queueHead = queueTail = qItem1;
+		};
+
+		qItem2 = qItem1;
+	};
+
+	qItem1->nextItem = queueHead;
+	queueHead->previousItem = qItem1;   // Make the queue circularly connected
+};
+
+void PDU_Queue::PDU_Queue_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("PDU_Queue, delete\n");}
+	QueueItem_s *queueItem, *oldQueueItem;
+	GenericMsgType msgType;
+	int i;
+
+	queueItem = queueTail;
+
+	for (i = 0; i < currentQueueLength; i++) {
+
+		if (queueDir == RX && queueItem->pdu->copiesSent > (queueItem->pdu->copiesReceived - 1)) { // If yes, then some other receiver of this PDU shall delete it
+			queueItem->pdu->copiesReceived++;
+		}
+		else {
+			msgType = queueItem->pdu->header.msgType;
+
+			switch (msgType) {
+
+				case HELLO:
+					delete queueItem->pdu->msgBody.helloBody;
+					break;
+				case EXT_NODETOPOLOGY:
+					delete queueItem->pdu->msgBody.extNodeTopBody;
+					break;
+				case EXT_TOPOLOGY_REFRESH:
+					delete queueItem->pdu->msgBody.extTopRefreshBody;
+					break;
+				case CENTROID:
+					delete queueItem->pdu->msgBody.centroidBody;
+					break;
+				case CENTROID_REFRESH:
+					delete queueItem->pdu->msgBody.centroidRefreshBody;
+					break;
+				case SUPERNODE:
+					delete queueItem->pdu->msgBody.superNodeBody;
+					break;
+				case SUPERNODE_REFRESH:
+					delete queueItem->pdu->msgBody.superNodeRefreshBody;
+					break;
+				case LINK_ABSTRACTION:
+					delete queueItem->pdu->msgBody.linkAbstBody;
+					break;
+				case LINK_ABST_REFRESH:
+					delete queueItem->pdu->msgBody.linkAbstRefreshBody;
+					break;
+				case REISSUE:
+					delete queueItem->pdu->msgBody.reissueBody;
+					break;
+				default:
+					SYSTEM->runtimerror(&get_identity(), "PDU_Queue_delete", "invalid_msgType", SYS_ERR_HARD);
+			};
+
+			delete queueItem->pdu;
+		};
+		
+		queueItem = queueItem->nextItem;
+	};
+
+	queueItem = queueTail;
+
+	for (i = 0; i < maxQueueLength; i++) {
+		oldQueueItem = queueItem;
+		queueItem = queueItem->nextItem;
+		delete oldQueueItem;
+	};
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+		cout << "Queue Callback\n";
+	}
+	else {
+		callbackRef = -1;
+	};
+
+	this->Entity_delete();
+};
+
+int PDU_Queue::add_queueItem(GenericPDU_s *pdu, TickPoint_s ticks, CallbackProtocol *callbackFunction) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("PDU_Queue, add_queueItem\n");}
+	int i;
+
+//	if (get_identity().name.name == 4161) {
+//		cout << "Ticks: " << SYSTEM->getTicks().tickPoint << " queue item added: " << pdu->header.msgType << "\n";
+//	};
+
+	if (currentQueueLength == maxQueueLength) {
+		SYSTEM->runtimerror(&get_identity(),"add_queueItem", "Queue_has_reached_max_length", SYS_ERR_HARD);
+
+		for (i = 0; i < currentQueueLength; i++) {
+			cout << "msgType: " << queueTail->pdu->header.msgType << " ticks: " << queueTail->ticks.tickPoint << "\n";
+			queueTail = queueTail->nextItem;
+		}
+
+		return(-1);
+	}
+	else {
+		if (ticks.tickPoint == 0 && currentQueueLength == 0) { // Deliver promptly
+			callbackRef = 0;
+			
+			if (queueDir == TX) {
+				callbackFunction->CALLBACK_put_PDU_onLink(pdu, 0);  // At the moment, the secret is not used.
+			}
+			else {
+				callbackFunction->CALLBACK_process_rxPDUs(pdu, 0);
+			}
+
+		}
+		else { 
+			queueHead->pdu = pdu;
+			queueHead->ticks = ticks;
+			queueHead->callbackfunction = callbackFunction;
+			queueHead = queueHead->nextItem;
+			currentQueueLength++;
+			callbackRef = SYSTEM->ticksQueue(this, 0, ticks, CB_PDU_QUEUE, 0);
+		};
+		return(0);
+	};
+
+};
+
+GenericPDU_s *PDU_Queue::remove_queueItem() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("PDU_Queue, remove_queueItem\n");}
+	GenericPDU_s *pdu;
+
+//	if (get_identity().name.name == 4161) {
+//		cout << "Ticks: " << SYSTEM->getTicks().tickPoint << " queue item removed: " << queueTail->pdu->header.msgType << "\n";
+//	};
+
+	if (currentQueueLength > 0) {
+		pdu = queueTail->pdu;
+		queueTail = queueTail->nextItem;
+		currentQueueLength--;
+		return (pdu);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "removeQueueItem", "Try_to_remove_from_an_empty_queue", SYS_ERR_HARD);
+		return(0);
+	};
+};
+
+void PDU_Queue::CALLBACK_tickZero(void *parameters, int secret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&get_identity(), &protRef->get_localNodeInfo()->nodeId);}
+
+	// Call callback function of queue tail. This called callback function shall also remove this queue item from the queue
+	if (currentQueueLength > 0) {  // Queue might have been flushed.
+
+		if (queueDir == TX) {
+			queueTail->callbackfunction->CALLBACK_put_PDU_onLink(queueTail->pdu, 0);  // NB! It is the callback function which removes the PDU from the queue. At the moment, the secret is not in use
+		}
+		else {
+			queueTail->callbackfunction->CALLBACK_process_rxPDUs(queueTail->pdu, 0);
+		};
+
+
+		this->remove_queueItem();
+
+		while (currentQueueLength > 0 && queueTail->ticks.tickPoint == 0) { // Deliver promptly until queue is empty and/or ticks > 0
+		
+			if (queueDir == TX) {
+				queueTail->callbackfunction->CALLBACK_put_PDU_onLink(queueTail->pdu, 0);  // At the moment, the secret is not in use
+			}
+			else {
+				queueTail->callbackfunction->CALLBACK_process_rxPDUs(queueTail->pdu, 0);
+			};
+
+			this->remove_queueItem();		
+		};
+
+	};
+
+	if (currentQueueLength > 0) { // Next queue item has ticks > 0
+		callbackRef = SYSTEM->ticksQueue(this, 0, queueTail->ticks, CB_PDU_QUEUE, 0);
+	}
+	else {
+		callbackRef = -1;
+	};
+
+};
+
+void PDU_Queue::flush_queue() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("PDU_Queue, flush_queue\n");}
+	QueueItem_s *queueItem;
+	GenericMsgType msgType;
+	int i;
+
+	queueItem = queueTail;
+
+	for (i = 0; i < currentQueueLength; i++) {
+
+		if (queueDir == RX && queueItem->pdu->copiesSent > (queueItem->pdu->copiesReceived - 1)) { // If yes, then some other receiver of this PDU shall delete it
+			queueItem->pdu->copiesReceived++;
+		}
+		else {
+			msgType = queueItem->pdu->header.msgType;
+
+			switch (msgType) {
+
+				case HELLO:
+					delete queueItem->pdu->msgBody.helloBody;
+					break;
+				case EXT_NODETOPOLOGY:
+					delete queueItem->pdu->msgBody.extNodeTopBody;
+					break;
+				case EXT_TOPOLOGY_REFRESH:
+					delete queueItem->pdu->msgBody.extTopRefreshBody;
+					break;
+				case CENTROID:
+					delete queueItem->pdu->msgBody.centroidBody;
+					break;
+				case CENTROID_REFRESH:
+					delete queueItem->pdu->msgBody.centroidRefreshBody;
+					break;
+				case SUPERNODE:
+					delete queueItem->pdu->msgBody.superNodeBody;
+					break;
+				case SUPERNODE_REFRESH:
+					delete queueItem->pdu->msgBody.superNodeRefreshBody;
+					break;
+				case LINK_ABSTRACTION:
+					delete queueItem->pdu->msgBody.linkAbstBody;
+					break;
+				case LINK_ABST_REFRESH:
+					delete queueItem->pdu->msgBody.linkAbstRefreshBody;
+					break;
+				case REISSUE:
+					delete queueItem->pdu->msgBody.reissueBody;
+					break;
+				default:
+					SYSTEM->runtimerror(&get_identity(), "PDU_Queue_delete", "invalid_msgType", SYS_ERR_HARD);
+			};
+
+			delete queueItem->pdu;
+		};
+
+			queueItem = queueItem->nextItem;
+	};
+
+	queueHead = queueTail;
+	currentQueueLength = 0;
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+//		cout << "Queue Callback\n";
+		callbackRef = -1;
+	}
+
+};
+
+ostream &operator<<(ostream &stream, PDU_Queue *pq) {
+	Entity *en;
+
+	en = pq;
+	stream << "PDU_Queue_Status:\n" << en;
+	stream << "Queue direction: " << pq->queueDir << " Max queue length: " << pq->maxQueueLength << " Current queue length: " << pq->currentQueueLength << "\n";
+	stream << "End_PDU_Queue_Status\n";
+	return stream;
+};
+
+// CLASS GENERICPROTOCOL FUNCTIONS
+void GenericProtocol::GenericProtocol_init(Identity_s *id, Node *nodeRef, NodeInfo_s *localNodeInfo, HorNodeInterface *localInf, Link *attachedLink, LinkEndpoint *attachedEndpoint, GenProtQLength_s qLen, unsigned int ttl) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, init\n");}
+	Identity_s sendQueueId, recQueueId;
+	int i;
+
+	qLength = qLen;
+	Entity_init(id, ttl, 0);
+	CallbackSystem_init();
+	CallbackProtocol_init();
+	PDU_Counter = 1;
+	sentPDUs = recPDUs = 0;
+	helloTicks = SYSTEM->msToTick(GP_HELLO_INTERVAL);
+	extNodeTopTicks = SYSTEM->msToTick(GP_EXTTOPOLOGY_INTERVAL);
+	centroidTicks = SYSTEM->msToTick(GP_CENTROID_INTERVAL);
+	superNodeTicks = SYSTEM->msToTick(GP_SUPERNODE_INTERVAL);
+	linkAbstractionTicks = SYSTEM->msToTick(GP_LINKABST_INTERVAL);
+	helloCallbackRef = extNodeCallbackRef = centroidCallbackRef = superNodeCallbackRef = linkAbstCallbackRef = -1;
+	
+	for (i = 0; i < MAX_MESSAGETYPES; i++) {
+		msgType[i] = (GenericMsgType) i;
+	};
+
+	thisNode.nodeRef = nodeRef;
+	thisNode.attachedLink = attachedLink;
+	thisNode.attachedLinkEndpoint = attachedEndpoint;
+	thisNode.localInterface = localInf;
+	thisNode.node = localNodeInfo;
+	thisNode.TTL = MAX_TTL;
+	thisNode.localSwitchInf = 0;
+	thisNode.switchRef = 0;
+
+	for (i = 0; i < MAX_MESSAGETYPES; i++) {
+		sentMsgTypes[i] = recMsgTypes[i] = 0;
+	}
+
+	if (qLength.txQ > 0) {
+		sendQueue = new PDU_Queue;
+		sendQueueId.type = "PDU_Queue";
+		sendQueueId.nickName = "-";
+		sendQueue->PDU_Queue_init(&sendQueueId, TX, qLength.txQ, ttl, this);
+	}
+	else {
+		sendQueue = 0;
+	};
+
+	if (qLength.rxQ > 0) {
+		recQueue = new PDU_Queue;
+		recQueueId.type = "PDU_Queue";
+		recQueueId.nickName = "-";
+		recQueue->PDU_Queue_init(&recQueueId, RX, qLength.rxQ, ttl, this);
+	}
+	else {
+		recQueue = 0;
+	};
+
+	protocolRunning = false;
+
+};
+
+void GenericProtocol::GenericProtocol_init(Identity_s *id, SwitchCore *switchRef, NodeInfo_s *localNodeInfo, SwitchCoreInterface *localInf, Link *attachedLink, LinkEndpoint *attachedEndpoint, GenProtQLength_s qLen, unsigned int ttl) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, init\n");}
+	Identity_s sendQueueId, recQueueId;
+
+	qLength = qLen;
+	Entity_init(id, ttl, 0);
+	CallbackSystem_init();
+	CallbackProtocol_init();
+	PDU_Counter = 1;
+	sentPDUs = recPDUs = 0;
+	thisNode.switchRef = switchRef;
+	thisNode.attachedLink = attachedLink;
+	thisNode.attachedLinkEndpoint = attachedEndpoint;
+	thisNode.localSwitchInf = localInf;
+	thisNode.node = localNodeInfo;
+	thisNode.TTL = MAX_TTL;
+	thisNode.nodeRef = 0;
+	thisNode.localInterface = 0;
+	helloCallbackRef = extNodeCallbackRef = centroidCallbackRef = superNodeCallbackRef = linkAbstCallbackRef = -1;
+
+	if (qLength.txQ > 0) {
+		sendQueue = new PDU_Queue;
+		sendQueueId.type = "PDU_Queue";
+		sendQueueId.nickName = "-";
+		sendQueue->PDU_Queue_init(&sendQueueId, TX, qLength.txQ, ttl, this);
+	}
+	else {
+		sendQueue = 0;
+	};
+
+	if (qLength.rxQ > 0) {
+		recQueue = new PDU_Queue;
+		recQueueId.type = "PDU_Queue";
+		recQueueId.nickName = "-";
+		recQueue->PDU_Queue_init(&recQueueId, RX, qLength.rxQ, ttl, this);
+	}
+	else {
+		recQueue = 0;
+	};
+
+	protocolRunning = false;
+
+};
+
+void GenericProtocol::GenericProtocol_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, delete\n");}
+	this->stop_protocol();
+	this->dealloc_memory();
+	this->Entity_delete();
+};
+
+int GenericProtocol::start_protocol() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, start_protocol\n");}
+	// This function assumes that it should start the protocol for an external interface
+
+	if (thisNode.localInterface != 0) {
+
+		if (thisNode.localInterface->get_interfaceType() == INF_EXTERNAL) {
+			
+			if (thisNode.attachedLinkEndpoint->get_linkDataDir() != RECEIVER) {
+				// Start scheduling for all message types
+				helloCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) HELLO], SYSTEM->jitterbug(helloTicks), CB_GENPROT, 0);
+				currentNodeTopVersion = currentNodeTopReissueCount = 0;
+				extNodeCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) EXT_NODETOPOLOGY], SYSTEM->jitterbug(extNodeTopTicks), CB_GENPROT, 0);
+				currentCentroidVersion = currentCentroidReissueCount = 0;
+				centroidCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) CENTROID], SYSTEM->jitterbug(centroidTicks), CB_GENPROT, 0);
+				currentSuperNodeId.name = globalNameSpace->reset_globalName();
+				currentSuperNodeVersion = currentSuperNodeReissueCount = 0;
+				superNodeCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) SUPERNODE], SYSTEM->jitterbug(superNodeTicks), CB_GENPROT, 0);
+				linkAbstCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) LINK_ABSTRACTION], SYSTEM->jitterbug(linkAbstractionTicks), CB_GENPROT, 0);
+			}; //ENDIF linkDataDir
+
+		};  // ENDIF INF_EXTERNAL
+
+	};  // ENDIF localInterface
+
+	protocolRunning = true;
+	return(0);
+};
+
+void GenericProtocol::gen_sendExtTop_message(MsgBody_ExtNodeTop_s *msgBodyExtNodeTop) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, gen_sendExtTop_message\n");}
+
+	NeighborNodeItem_s *neighborItem;
+	NodeTopologyItem_s nodeTopItem;
+	int noInf, i, j;
+
+	msgBodyExtNodeTop->version = thisNode.nodeRef->get_nodeTopVersion();
+	msgBodyExtNodeTop->sourceNode = *thisNode.node;
+
+	noInf = thisNode.nodeRef->get_currentNumberNodeInf();
+	msgBodyExtNodeTop->nodeTopology.numberNodeInf = 0;
+
+	for (i = 0; i < noInf; i++) {
+		nodeTopItem = thisNode.nodeRef->getNext_nodeTopItem(false);
+
+		if (nodeTopItem.attachedExtLink != 0) {
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].linkId = nodeTopItem.attachedExtLink->get_identity();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].localDirection = nodeTopItem.localExtLinkEndpoint->get_linkDataDir();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].localEndpointId = nodeTopItem.localExtLinkEndpoint->get_identity();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].localInterfaceId = nodeTopItem.nodeInterface->get_identity();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].localDomainLevel = nodeTopItem.nodeInterface->get_interfaceDomainLevel();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].localSuperNodeId = thisNode.nodeRef->get_superNodeId();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].linkBuilder = nodeTopItem.linkBuilder;
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].extLinkTraits = nodeTopItem.attachedExtLink->get_linkTraits();
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].nodeInfTraits = nodeTopItem.nodeInterface->get_nodeInterfaceTraits();
+
+			if (nodeTopItem.attachedIntLink != 0) {
+				msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits = nodeTopItem.attachedIntLink->get_linkTraits();
+				msgBodyExtNodeTop->nodeTopology.interfaces[i].switchCoreInfTraits = thisNode.nodeRef->find_switchCoreInf(nodeTopItem.attachedIntLink)->get_switchCoreInfTraits();
+			}
+			else {
+				msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits.genTransmission.completionTime = msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits.genTransmission.mtbf = 0;
+				msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits.length = 0;
+				msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits.transmission.bandwidth = msgBodyExtNodeTop->nodeTopology.interfaces[i].intLinkTraits.transmission.ber = 0;
+			};
+
+			j = 0;
+			neighborItem = nodeTopItem.firstNeighborItem;
+
+			while (neighborItem != 0) {
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].interfaceId = neighborItem->neighbor.remoteInterfaceId;
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].nodeId = neighborItem->neighbor.remoteNode.nodeId;
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].remoteLinkEndpointId = neighborItem->neighbor.remoteLinkEndpointId;
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].domainLevel = neighborItem->neighbor.remoteDomainLevel;
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].linkBuilder = neighborItem->neighbor.linkBuilder;
+					msgBodyExtNodeTop->nodeTopology.interfaces[i].neighbors[j].superNodeId = neighborItem->neighbor.remoteSuperNodeId;
+					neighborItem = neighborItem->nextItem;
+					j++;
+			};
+
+			msgBodyExtNodeTop->nodeTopology.numberNodeInf++;
+			msgBodyExtNodeTop->nodeTopology.interfaces[i].numberNeighbors = j;
+		};
+
+	};  // ENDFOR noInf
+
+	thisNode.nodeRef->getNext_nodeTopItem(true);
+};
+
+void GenericProtocol::gen_centroid_message(MsgBody_Centroid_s *msgBodyCentroid) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, gen_centroid_message\n");}
+
+	CentroidItem_s *myCentroid;
+	int i, numberNodes;
+
+	msgBodyCentroid->sourceNode = *thisNode.node;
+	msgBodyCentroid->version = thisNode.nodeRef->get_centroidVersion();
+
+	myCentroid = thisNode.nodeRef->get_centroidStatus(&thisNode.node->nodeId);
+
+	msgBodyCentroid->centroidStatus = myCentroid->centroidStatus;
+	msgBodyCentroid->centroidScore = myCentroid->score;
+	msgBodyCentroid->domainRadius = myCentroid->domainRadius;
+	msgBodyCentroid->currentCentroid = myCentroid->currentCentroid;
+	msgBodyCentroid->version = thisNode.nodeRef->get_centroidVersion();
+	
+//	if (myCentroid->centroidStatus == I_CENTROID || myCentroid->centroidStatus == UNHOMED_CENTROID) {  // This node is the current centroid, fill in the list of nodes for this domain
+	numberNodes = myCentroid->numberNodes;
+
+	for (i = 0; i < numberNodes; i++) {
+		msgBodyCentroid->domainNodes[i] = myCentroid->domainNodes[i];
+	}
+
+	if (SYSTEM->getTicks().tickPoint > 5000 && myCentroid->origNode.nodeId.name.name == 2648) {
+		cout << "\nNode 2648 Domain nodes: ";
+		for (i = 0; i < numberNodes; i++) {
+			cout << msgBodyCentroid->domainNodes[i].domainNodeId.name.name << " ";
+		}
+
+//		string input;
+		cout << "\n";// cin >> input;
+	}
+
+	msgBodyCentroid->numberNodes = numberNodes;
+//	}
+//	else {
+//		msgBodyCentroid->numberNodes = 0;
+//	};
+
+};
+
+
+int GenericProtocol::stop_protocol() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, stopProtocol\n");}
+
+	if (recQueue != 0) {
+		recQueue->flush_queue();
+	}
+
+	if (sendQueue != 0) {
+		sendQueue->flush_queue();
+	}
+
+
+	if (helloCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(helloCallbackRef);
+		helloCallbackRef = -1;
+//		cout << "Hello Callback\n";
+	}
+
+	if (extNodeCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(extNodeCallbackRef);
+		extNodeCallbackRef = -1;
+//		cout << "ExtNode Callback\n";
+	}
+
+	if (centroidCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(centroidCallbackRef);
+		centroidCallbackRef = -1;
+//		cout << "Centroid Callback\n";
+	}
+
+	if (superNodeCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(superNodeCallbackRef);
+		superNodeCallbackRef = -1;
+//		cout << "SuperNode Callback\n";
+	}
+
+	if (linkAbstCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(linkAbstCallbackRef);
+		linkAbstCallbackRef = -1;
+//		cout << "LinkAbst Callback\n";
+	}
+
+	helloCallbackRef = extNodeCallbackRef = centroidCallbackRef = superNodeCallbackRef = linkAbstCallbackRef = -1;
+	protocolRunning = false;
+	return(0);
+
+};
+
+bool GenericProtocol::is_protocolRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, is_protocolRunning\n");}
+	return(protocolRunning);
+};
+
+void GenericProtocol::CALLBACK_tickZero(void *parameters, int secret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&get_identity(), &this->thisNode.node->nodeId);}
+	// Secret not in use at the moment.
+	GenericMsgType inMsgType;
+
+	if (protocolRunning == true) {
+		inMsgType = *(GenericMsgType *) parameters;
+
+		if (inMsgType == HELLO) {
+			helloCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) HELLO], SYSTEM->jitterbug(helloTicks), CB_GENPROT, 0);
+		}
+		else if (inMsgType == EXT_NODETOPOLOGY || inMsgType == EXT_TOPOLOGY_REFRESH) {
+
+			if (currentNodeTopVersion < thisNode.nodeRef->get_nodeTopVersion() || currentNodeTopReissueCount < thisNode.nodeRef->get_extTopReissueCount()) {  // There is a newer version, OR a reissueing has been requested
+				inMsgType = EXT_NODETOPOLOGY;
+			}
+			else {  // Just send a refresh
+				inMsgType = EXT_TOPOLOGY_REFRESH;
+			};
+
+			extNodeCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) EXT_NODETOPOLOGY], SYSTEM->jitterbug(extNodeTopTicks), CB_GENPROT, 0);
+		}
+		else if (inMsgType == CENTROID || inMsgType == CENTROID_REFRESH) {
+
+			if (currentCentroidVersion < thisNode.nodeRef->get_centroidVersion() || currentCentroidReissueCount < thisNode.nodeRef->get_centroidReissueCount()) {  // There is a newer version, OR a reissueing has been requested
+				inMsgType = CENTROID;
+			}
+			else {  // Just send a refresh
+				inMsgType = CENTROID_REFRESH;
+			};
+
+			centroidCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) CENTROID], SYSTEM->jitterbug(centroidTicks), CB_GENPROT, 0);
+		}
+		else if (inMsgType == SUPERNODE || inMsgType == SUPERNODE_REFRESH) {
+			// First check whether this node is still the 'host' of the superNode
+
+			if (globalNameSpace->check_ifEqual(thisNode.nodeRef->get_superNodePDUProvider(false).name, thisNode.nodeRef->get_identity().name) == true) {  // Send superNodePDU status
+
+				if (globalNameSpace->check_ifEqual(currentSuperNodeId.name, thisNode.nodeRef->get_superNodeId().name) == false) { // There is a need to reset version
+					currentSuperNodeId.name = thisNode.nodeRef->get_superNodeId().name;
+					currentSuperNodeVersion = currentSuperNodeReissueCount = 0;
+				}
+
+				if (currentSuperNodeVersion < thisNode.nodeRef->get_superNodePDUStatus().currentVersion || currentSuperNodeReissueCount < thisNode.nodeRef->get_superNodePDUStatus().reissueCount) {  // There is a newer version, OR a reissue request
+					inMsgType = SUPERNODE;
+				}
+				else {
+					inMsgType = SUPERNODE_REFRESH;
+				};
+
+			}
+			else {
+				inMsgType = MSGTYPE_INVALID;
+			};
+
+			superNodeCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) SUPERNODE], SYSTEM->jitterbug(superNodeTicks), CB_GENPROT, 0);
+		}
+		else if (inMsgType == LINK_ABSTRACTION) {
+			send_linkAbst_messages();
+			inMsgType = MSGTYPE_INVALID;
+			linkAbstCallbackRef = SYSTEM->ticksQueue(this, (void *) &msgType[(int) LINK_ABSTRACTION], SYSTEM->jitterbug(linkAbstractionTicks), CB_GENPROT, 0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "CALLBACK_tickZero", "invalid_message_type", SYS_ERR_HARD);
+		};  // ENDIF msgType
+
+		if (inMsgType != MSGTYPE_INVALID) {  // LINKABSTRACTION messages are sent using a separate function, see above
+			CALLBACK_send_PDU(inMsgType);
+		}
+
+	}; // ENDIF protocolRunning
+
+};
+
+void GenericProtocol::send_linkAbst_messages() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, send_linkAbst_messages\n");}
+
+	LinkAbstInfo_s *linkAbst;
+	LinkAbstMsg_s *linkAbstMsg;
+	bool linkFound;
+
+	linkAbst = thisNode.nodeRef->get_nextLinkAbstFromSN(&thisNode.attachedLink->get_identity(), 0, false);
+
+	while (linkAbst != 0) {
+		// Only send LINKABSTRACTION messages for those link abstractions for which the local superNode is responsible
+
+		if (globalNameSpace->check_ifEqual(linkAbst->origNodeId.name, thisNode.nodeRef->get_superNodeId().name) == true) {
+			// Find the underlying link in the link abstraction corresponding to the attached link for this interface
+			linkAbstMsg = linkAbst->firstLinkAbstMsg;
+			linkFound = false;
+	
+			while (linkAbstMsg != 0 && linkFound == false) {
+	
+				if (globalNameSpace->check_ifEqual(linkAbstMsg->linkAbstractionBody.linkId.name, thisNode.attachedLink->get_identity().name) == true && linkAbst->linkBuilder == true) {
+					linkFound = true;
+				}
+				else {
+					linkAbstMsg = linkAbstMsg->nextItem;
+				};
+
+			}
+
+			if (linkFound == true) {
+
+				if (linkAbstMsg->linkAbstractionBody.numberPeers > 0) {  // Only send if there are peering nodes
+
+					if (linkAbstMsg->currentVersion < linkAbstMsg->linkAbstractionBody.version || linkAbstMsg->currentReissueCount < linkAbstMsg->reissueCount) {  // Send a LINKABSTRACTION message in these cases
+						this->CALLBACK_sendLinkAbst_PDU(LINK_ABSTRACTION, linkAbst, linkAbstMsg);
+					}
+					else {  // Send a refresh
+						this->CALLBACK_sendLinkAbst_PDU(LINK_ABST_REFRESH, linkAbst, linkAbstMsg);
+					};
+
+				}
+
+			}
+
+		}
+
+		linkAbst = thisNode.nodeRef->get_nextLinkAbstFromSN(&thisNode.attachedLink->get_identity(), 0, false);
+	};  // ENDWHILE linkAbst
+
+//	if (thisNode.localInterface->get_nodeInfRef()->get_identity().name.name == 806) {
+//		string input;
+//		cin >> input;
+//	};
+
+};
+
+
+NodeInfo_s *GenericProtocol::get_localNodeInfo() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, get_localNodeInfo\n");}
+
+	return (this->thisNode.node);
+};
+
+int GenericProtocol::CALLBACK_send_PDU(GenericMsgType msgType) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, CALLBACK_send_PDU\n");}
+
+	MsgBody_Hello_s *msgBodyHello;
+	MsgBody_ExtNodeTop_s *msgBodyExtNodeTop;
+	MsgBody_ExtTopRefresh_s *msgBodyExtTopRefresh;
+	MsgBody_Centroid_s *msgBodyCentroid;
+	MsgBody_CentroidRefresh_s *msgBodyCentroidRefresh;
+	MsgBody_SuperNode_s *msgBodySuperNode;
+	MsgBody_SuperNodeRefresh_s *msgBodySuperNodeRefresh;
+	GenericPDU_s *pdu;
+	SuperNodePDU_Status_s superNodePDUStatus;
+
+	try {
+		pdu = new GenericPDU_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+		return (-1);
+	}
+
+	pdu->copiesSent = pdu->copiesReceived = 0;
+	pdu->header.msgClass = GENERIC;
+	pdu->header.protocolVersion = GENERIC_PROTOCOL_VERSION;;
+	pdu->header.PDU_number = PDU_Counter++;
+	pdu->header.msgType = msgType;
+	pdu->header.sourceNode.nodeId = thisNode.node->nodeId;
+	pdu->header.sourceNode.nodeInfId = thisNode.localInterface->get_nodeInfRef()->get_identity();
+	pdu->protTraceRef = 0;
+
+/*
+	if (thisNode.node->nodeId.name.name  == 2648 && (pdu->header.msgType == SUPERNODE || pdu->header.msgType == SUPERNODE_REFRESH)) {
+		pdu->protTraceRef = SYSTEM->init_protTrace(pdu, &thisNode.node->nodeId, SUPERNODE);  // Pointer inititiates to 0 unless protTrace is TRUE
+	}
+	else if (thisNode.node->nodeId.name.name  == 2648 && (pdu->header.msgType == CENTROID || pdu->header.msgType == CENTROID_REFRESH)) {
+		pdu->protTraceRef = SYSTEM->init_protTrace(pdu, &thisNode.node->nodeId, CENTROID);  // Pointer inititiates to 0 unless protTrace is TRUE
+	}
+	else {
+		pdu->protTraceRef = 0;
+	};
+*/
+	pdu->header.numberDest = 0;  // Broadcast assumed!!!
+	pdu->header.destNode[0].nodeId = this->reset_anotherIdentity();
+
+	switch (msgType) {
+
+		case HELLO:
+			try {
+				msgBodyHello = new MsgBody_Hello_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_TTL = HELLO_TTL;
+			pdu->header.PDU_size = sizeof(GenericPDU_Hello_s);
+
+			msgBodyHello->localNode = *thisNode.node;
+			msgBodyHello->localInterfaceId = thisNode.localInterface->get_nodeInfRef()->get_identity();
+			msgBodyHello->linkId = thisNode.attachedLink->get_identity();
+			msgBodyHello->localLinkEndpointId = thisNode.attachedLinkEndpoint->get_identity();
+			msgBodyHello->localSuperNodeId = thisNode.nodeRef->get_superNodeId();
+			msgBodyHello->domainLevel = thisNode.localInterface->get_interfaceDomainLevel();
+			msgBodyHello->linkBuilder = thisNode.nodeRef->check_ifLinkBuilder(thisNode.localInterface->get_nodeInfRef());
+
+			pdu->msgBody.helloBody = msgBodyHello;
+			break;
+
+		case EXT_NODETOPOLOGY:
+			try {
+				msgBodyExtNodeTop = new MsgBody_ExtNodeTop_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();
+			pdu->header.PDU_size = sizeof(GenericPDU_ExtNodeTop_s);
+
+			if (currentNodeTopReissueCount < thisNode.nodeRef->get_extTopReissueCount()) {
+				currentNodeTopReissueCount = thisNode.nodeRef->get_extTopReissueCount();
+
+				if (currentNodeTopVersion == thisNode.nodeRef->get_nodeTopVersion()) {
+					msgBodyExtNodeTop->reissue = true;  // Only set if reissueing the same version
+				}
+				else {
+					msgBodyExtNodeTop->reissue = false;
+				};
+
+			}
+
+			if (currentNodeTopVersion < thisNode.nodeRef->get_nodeTopVersion()) {
+				currentNodeTopVersion = thisNode.nodeRef->get_nodeTopVersion();
+			}
+
+			gen_sendExtTop_message(msgBodyExtNodeTop);
+
+			pdu->msgBody.extNodeTopBody = msgBodyExtNodeTop;
+
+			if (thisNode.nodeRef->get_ownNodeTopVersion() < currentNodeTopVersion) {  // No need to update if that already has been done through some other interface
+				thisNode.localInterface->update_ownNodeTopInfo(msgBodyExtNodeTop);
+			}
+
+			break;
+
+		case EXT_TOPOLOGY_REFRESH:
+			try {
+				msgBodyExtTopRefresh = new MsgBody_ExtTopRefresh_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();
+			pdu->header.PDU_size = sizeof(GenericPDU_ExtTopRefresh_s);
+
+			msgBodyExtTopRefresh->version = thisNode.nodeRef->get_nodeTopVersion();
+			msgBodyExtTopRefresh->refreshCount = thisNode.nodeRef->get_extTopRefreshCount();
+			msgBodyExtTopRefresh->sourceNode = *thisNode.node;
+			pdu->msgBody.extTopRefreshBody = msgBodyExtTopRefresh;
+			break;
+
+		case CENTROID:
+			try {
+				msgBodyCentroid = new MsgBody_Centroid_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			if (currentCentroidReissueCount < thisNode.nodeRef->get_centroidReissueCount()) {
+				currentCentroidReissueCount = thisNode.nodeRef->get_centroidReissueCount();
+
+				if (currentCentroidVersion == thisNode.nodeRef->get_centroidVersion()) {
+					msgBodyCentroid->reissue = true;  // Only set if reissueing the same version
+				}
+				else {
+					msgBodyCentroid->reissue = false;
+				};
+
+			}
+
+			if (currentCentroidVersion < thisNode.nodeRef->get_centroidVersion()) {
+				currentCentroidVersion = thisNode.nodeRef->get_centroidVersion();
+			}
+
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();
+			pdu->header.PDU_size = sizeof(GenericPDU_Centroid_s);
+			gen_centroid_message(msgBodyCentroid);
+			pdu->msgBody.centroidBody = msgBodyCentroid;
+			break;
+
+		case CENTROID_REFRESH:
+			try {
+				msgBodyCentroidRefresh = new MsgBody_CentroidRefresh_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();
+			pdu->header.PDU_size = sizeof(GenericPDU_CentroidRefresh_s);
+
+			msgBodyCentroidRefresh->sourceNode = *thisNode.node;
+			msgBodyCentroidRefresh->version = thisNode.nodeRef->get_centroidVersion();
+			msgBodyCentroidRefresh->refreshCount = thisNode.nodeRef->get_centroidRefreshCount();
+			msgBodyCentroidRefresh->centroidStatus = thisNode.nodeRef->get_centroidStatus(&thisNode.node->nodeId)->centroidStatus;
+			msgBodyCentroidRefresh->centroidScore = thisNode.nodeRef->get_centroidScore();
+			pdu->msgBody.centroidRefreshBody = msgBodyCentroidRefresh;
+			break;
+
+		case SUPERNODE:
+			try {
+				msgBodySuperNode = new MsgBody_SuperNode_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			if (currentSuperNodeReissueCount < thisNode.nodeRef->get_superNodePDUStatus().reissueCount) {
+				currentSuperNodeReissueCount = thisNode.nodeRef->get_superNodePDUStatus().reissueCount;
+
+				if (currentSuperNodeVersion == thisNode.nodeRef->get_superNodePDUStatus().currentVersion) {
+					msgBodySuperNode->reissue = true;  // Only set if reissueing the same version
+				}
+				else {
+					msgBodySuperNode->reissue = false;
+				};
+
+			}
+
+			if (currentSuperNodeVersion < thisNode.nodeRef->get_superNodePDUStatus().currentVersion) {
+				currentSuperNodeVersion = thisNode.nodeRef->get_superNodePDUStatus().currentVersion;
+			}
+
+			pdu->header.PDU_size = sizeof(GenericPDU_SuperNode_s);
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();  // Requires reconsideration!!! SuperNode ref should not reach beyond the domain
+			superNodePDUStatus = thisNode.nodeRef->get_superNodePDUStatus();
+			msgBodySuperNode->version = superNodePDUStatus.currentVersion;
+			msgBodySuperNode->sourceNode = *thisNode.nodeRef->get_myNodeInfo();
+			msgBodySuperNode->superNodeRef = superNodePDUStatus.superNodeRef;
+			pdu->msgBody.superNodeBody = msgBodySuperNode;
+			break;
+
+		case SUPERNODE_REFRESH:
+			try {
+				msgBodySuperNodeRefresh = new MsgBody_SuperNodeRefresh_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_size = sizeof(GenericPDU_SuperNodeRefresh_s);
+			pdu->header.PDU_TTL = thisNode.nodeRef->get_netNeighborhood();  // See above!!!
+			superNodePDUStatus = thisNode.nodeRef->get_superNodePDUStatus();
+			msgBodySuperNodeRefresh->version = superNodePDUStatus.currentVersion;
+			msgBodySuperNodeRefresh->refreshCount = superNodePDUStatus.refreshCount;
+			msgBodySuperNodeRefresh->sourceNode = *thisNode.nodeRef->get_myNodeInfo();
+			msgBodySuperNodeRefresh->superNodeRef = superNodePDUStatus.superNodeRef;
+			pdu->msgBody.superNodeRefreshBody = msgBodySuperNodeRefresh;
+			break;
+
+		default:
+			SYSTEM->runtimerror(&get_identity(), "CALLBACK_send_PDU", "Invalid_message_type", SYS_ERR_HARD);
+			return(-1);
+	};
+
+	queue_PDU_tx(pdu);
+
+	return(0);
+};
+
+int GenericProtocol::CALLBACK_sendLinkAbst_PDU(GenericMsgType msgType, LinkAbstInfo_s *linkAbst, LinkAbstMsg_s *linkAbstMsg) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, CALLBACK_sendLinkAbst_PDU\n");}
+
+	MsgBody_LinkAbstraction_s *msgBodyLinkAbst;
+	MsgBody_LinkAbstRefresh_s *msgBodyLinkAbstRefresh;
+	GenericPDU_s *pdu;
+	int i, numberDest;
+
+	try {
+		pdu = new GenericPDU_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&get_identity(), "CALLBACK_sendLinkAbst_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+		return (-1);
+	}
+
+	pdu->copiesSent = pdu->copiesReceived = 0;
+	pdu->header.msgClass = GENERIC;
+	pdu->header.protocolVersion = GENERIC_PROTOCOL_VERSION;;
+	pdu->header.PDU_number = PDU_Counter++;
+	pdu->header.msgType = msgType;
+	pdu->header.sourceNode.nodeId = thisNode.node->nodeId;  // Should it be the superNode Id instead???
+	pdu->header.sourceNode.nodeInfId = thisNode.localInterface->get_nodeInfRef()->get_identity();
+	pdu->header.PDU_TTL = LINKABSTRACTION_TTL;
+	pdu->header.numberDest = linkAbstMsg->linkAbstractionBody.numberPeers;
+//	pdu->protTraceRef = 0;
+	pdu->protTraceRef = SYSTEM->init_protTrace(pdu, &linkAbstMsg->linkAbstractionBody.sourceNode.nodeId, LINK_ABSTRACTION);  // Pointer inititiates to 0 unless protTrace is TRUE
+
+	numberDest = linkAbstMsg->linkAbstractionBody.numberPeers;
+
+	for (i = 0; i < numberDest; i++) {
+		pdu->header.destNode[i].nodeId = linkAbstMsg->linkAbstractionBody.peeringNodes[i];
+	}
+
+	pdu->header.destNode[i].nodeId = this->reset_anotherIdentity();
+
+	switch (msgType) {
+
+		case LINK_ABSTRACTION:
+			try {
+				msgBodyLinkAbst = new MsgBody_LinkAbstraction_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_sendLinkAbst_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_size = sizeof(GenericPDU_LinkAbstraction_s);
+
+			if (linkAbstMsg->currentReissueCount < linkAbstMsg->reissueCount) {
+				linkAbstMsg->currentReissueCount = linkAbstMsg->reissueCount;
+
+				if (linkAbstMsg->currentVersion == linkAbstMsg->linkAbstractionBody.version) {
+					linkAbstMsg->linkAbstractionBody.reissue = true; // Only set if reissueing the same version
+				}
+				else {
+					linkAbstMsg->linkAbstractionBody.reissue = false;
+				};
+
+			}
+
+			if (linkAbstMsg->currentVersion < linkAbstMsg->linkAbstractionBody.version) {
+				linkAbstMsg->currentVersion = linkAbstMsg->linkAbstractionBody.version;
+			}
+
+			*msgBodyLinkAbst = linkAbstMsg->linkAbstractionBody;
+			pdu->msgBody.linkAbstBody = msgBodyLinkAbst;
+			break;
+
+		case LINK_ABST_REFRESH:
+			try {
+				msgBodyLinkAbstRefresh = new MsgBody_LinkAbstRefresh_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_sendLinkAbst_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+				return (-1);
+			}
+
+			pdu->header.PDU_size = sizeof(GenericPDU_LinkAbstRefresh_s);
+			*msgBodyLinkAbstRefresh = linkAbstMsg->linkAbstRefreshBody;
+			pdu->msgBody.linkAbstRefreshBody = msgBodyLinkAbstRefresh;
+			break;
+
+	default:
+			SYSTEM->runtimerror(&get_identity(), "CALLBACK_sendLinkAbst_PDU", "Invalid_message_type", SYS_ERR_HARD);
+			return(-1);
+	};
+
+	queue_PDU_tx(pdu);
+
+	return(0);
+};
+
+
+int GenericProtocol::queue_PDU_tx(GenericPDU_s *pdu) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, queue_PDU_tx\n");}
+	TickPoint_s exactTicks;
+
+	exactTicks = SYSTEM->addTicks(SYSTEM->msToTick((thisNode.attachedLink->get_linkLength()/LIGHTSPEED) * 1000), SYSTEM->msToTick(MIN_PDU_TX_TICKS));  // Check for round-off effects. 
+
+	sendQueue->add_queueItem(pdu, exactTicks, this);
+
+	return(0);
+};
+
+int GenericProtocol::queue_PDU_rx(GenericPDU_s *pdu) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, queue_PDU_rx\n");}
+	TickPoint_s exactTicks;
+
+	exactTicks = SYSTEM->msToTick(MIN_PDU_RX_TICKS);
+
+	recQueue->add_queueItem(pdu, exactTicks, this);
+
+	return(0);
+};
+
+void GenericProtocol::CALLBACK_put_PDU_onLink(GenericPDU_s *pdu, double secret) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, CALLBACK_put_PDU_onLink\n");}
+
+	LinkDestEndpointInfo_s linkDestInfo;
+	int i;
+	bool destFound;
+	GenericMsgType sentMsgType;
+
+	sentMsgType = pdu->header.msgType;
+
+	if (pdu->header.numberDest == 0) { // The message is a broadcast, send to all destinations
+
+		linkDestInfo = thisNode.attachedLink->get_nextLinkEndpointInfo(thisNode.attachedLinkEndpoint);
+
+		while (globalNameSpace->check_ifValid(linkDestInfo.nodeId.name) == true) {
+
+			if (globalNameSpace->check_ifEqual(linkDestInfo.nodeId.name, thisNode.node->nodeId.name) == false) {  // Check that message is not looped back. 
+				linkDestInfo.CALLBACK_functions.CALLBACK_ProtFunctions->CALLBACK_rec_PDU_fromLink(pdu, 0);  // At the moment, the secret is not used.
+				pdu->copiesSent++;
+				if (SYS_protTrace == true && pdu->header.msgType != HELLO) { SYSTEM->report_protTraceEvent(&thisNode.node->nodeId, &thisNode.localInterface->get_nodeInfRef()->get_identity(), TRANSMITTER, pdu);}
+			};
+			
+			linkDestInfo = thisNode.attachedLink->get_nextLinkEndpointInfo(thisNode.attachedLinkEndpoint);
+		};
+	}
+	else {  // The message is a uni-/multicast
+		linkDestInfo = thisNode.attachedLink->get_nextLinkEndpointInfo(thisNode.attachedLinkEndpoint);
+
+		while (globalNameSpace->check_ifValid(linkDestInfo.nodeId.name) == true) {
+			destFound = false;
+
+			for (i = 0; i < pdu->header.numberDest; i++) {
+
+				if (globalNameSpace->check_ifEqual(pdu->header.destNode[i].nodeId.name, linkDestInfo.nodeId.name) == true || globalNameSpace->check_ifEqual(pdu->header.destNode[i].nodeId.name, linkDestInfo.superNodeId.name) == true) {
+					destFound = true;
+				}
+
+			};
+
+			if (destFound == true) { // There must be a match!
+				linkDestInfo.CALLBACK_functions.CALLBACK_ProtFunctions->CALLBACK_rec_PDU_fromLink(pdu, 0);
+				pdu->copiesSent++;
+				if (SYS_protTrace == true && pdu->header.msgType != HELLO) { SYSTEM->report_protTraceEvent(&thisNode.node->nodeId, &thisNode.localInterface->get_nodeInfRef()->get_identity(), TRANSMITTER, pdu);}
+			};  // NB!!! An else statement is needed in case there is no valid destination, for example a node could have detached from the link
+
+			linkDestInfo = thisNode.attachedLink->get_nextLinkEndpointInfo(thisNode.attachedLinkEndpoint);
+		};
+
+	};
+
+	sentPDUs++;
+	sentMsgTypes[(int) sentMsgType]++;
+};
+
+void GenericProtocol::CALLBACK_rec_PDU_fromLink(GenericPDU_s *pdu, double secret) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, CALLBACK_rec_PDU_fromLink\n");}
+
+	if (protocolRunning == true) {
+		queue_PDU_rx(pdu);
+	}
+	else {
+		pdu->copiesReceived++;
+
+		if (pdu->copiesReceived == pdu->copiesSent) {
+			deletePDU(pdu);
+		}
+
+	};
+
+};
+
+void GenericProtocol::CALLBACK_process_rxPDUs(GenericPDU_s *pdu, double secret) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, CALLBACK_process_rxPDUs\n");}
+
+	NeighborNodeInfo_s neighborInfo;
+	ExtNodeTopInfo_s nodeTopInfo;
+	CentroidInfo_s centroidInfo;
+	SuperNodeInfo_s superNodeInfo;
+	LinkAbstractionInfo_s linkAbstractionInfo;
+	ReissueInfo_s reissueInfo;
+	int i;
+
+	pdu->header.PDU_TTL--;
+
+	if (SYS_eventTrace == true) {SYSTEM->eventTrace(&this->get_identity(), &this->thisNode.node->nodeId, SYS_LL_LOW, "Received_message_type", (int *) &pdu->header.msgType, 0, 0, 0);}
+
+	switch (pdu->header.msgType) {  // It is assumed that MsgClass = GENERIC
+
+		case HELLO:
+			neighborInfo.remoteLinkEndpointId = pdu->msgBody.helloBody->localLinkEndpointId;
+			neighborInfo.linkId = pdu->msgBody.helloBody->linkId;
+			neighborInfo.remoteInterfaceId = pdu->msgBody.helloBody->localInterfaceId;
+			neighborInfo.remoteNode = pdu->msgBody.helloBody->localNode;
+			neighborInfo.remoteDomainLevel = pdu->msgBody.helloBody->domainLevel;
+			neighborInfo.linkBuilder = pdu->msgBody.helloBody->linkBuilder;
+			neighborInfo.remoteSuperNodeId = pdu->msgBody.helloBody->localSuperNodeId;
+			neighborInfo.timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(GP_NEIGHBOR_TIMETOLIVE));
+			neighborInfo.protTraceRef = pdu->protTraceRef;
+			thisNode.localInterface->CALLBACK_receive_neighborInfo(thisNode.localInterface->get_interfaceType(), &neighborInfo);
+			break;
+
+		case EXT_NODETOPOLOGY:
+		case EXT_TOPOLOGY_REFRESH:
+
+			nodeTopInfo.msgType = pdu->header.msgType;
+			nodeTopInfo.PDU_number = pdu->header.PDU_number;
+			nodeTopInfo.PDU_size = pdu->header.PDU_size;
+			nodeTopInfo.timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(GP_REMOTE_TIMETOLIVE));
+			nodeTopInfo.PDU_TTL = pdu->header.PDU_TTL;
+			nodeTopInfo.protTraceRef = pdu->protTraceRef;
+
+			if (pdu->header.msgType == EXT_NODETOPOLOGY) {
+				nodeTopInfo.reissue = pdu->msgBody.extNodeTopBody->reissue;
+				nodeTopInfo.origNode = pdu->msgBody.extNodeTopBody->sourceNode;
+				nodeTopInfo.version = pdu->msgBody.extNodeTopBody->version;
+				nodeTopInfo.origNodeTop = pdu->msgBody.extNodeTopBody->nodeTopology;
+			}
+			else {
+				nodeTopInfo.origNode = pdu->msgBody.extTopRefreshBody->sourceNode;
+				nodeTopInfo.version = pdu->msgBody.extTopRefreshBody->version;
+				nodeTopInfo.refreshCount = pdu->msgBody.extTopRefreshBody->refreshCount;
+			};
+
+			thisNode.localInterface->CALLBACK_receive_extNodeTopInfo(thisNode.localInterface->get_interfaceType(), &nodeTopInfo);
+
+		break;
+
+		case CENTROID:
+		case CENTROID_REFRESH:
+			centroidInfo.msgType = pdu->header.msgType;
+			centroidInfo.PDU_number = pdu->header.PDU_number;
+			centroidInfo.PDU_size = pdu->header.PDU_size;
+			centroidInfo.timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(GP_CENTROID_TIMETOLIVE));
+			centroidInfo.PDU_TTL = pdu->header.PDU_TTL;
+			centroidInfo.protTraceRef = pdu->protTraceRef;
+
+			if (pdu->header.msgType == CENTROID) {
+				centroidInfo.reissue = pdu->msgBody.centroidBody->reissue;
+				centroidInfo.origNode = pdu->msgBody.centroidBody->sourceNode;
+				centroidInfo.version = pdu->msgBody.centroidBody->version;
+				centroidInfo.centroidStatus = pdu->msgBody.centroidBody->centroidStatus;
+				centroidInfo.centroidScore = pdu->msgBody.centroidBody->centroidScore;
+				centroidInfo.currentCentroid = pdu->msgBody.centroidBody->currentCentroid;
+				centroidInfo.domainRadius = pdu->msgBody.centroidBody->domainRadius;
+				centroidInfo.numberNodes = pdu->msgBody.centroidBody->numberNodes;
+
+				for (i = 0; i < centroidInfo.numberNodes; i++) {
+					centroidInfo.domainNodes[i] = pdu->msgBody.centroidBody->domainNodes[i];
+				}
+
+			}
+			else {
+				centroidInfo.origNode = pdu->msgBody.centroidRefreshBody->sourceNode;
+				centroidInfo.version = pdu->msgBody.centroidRefreshBody->version;
+				centroidInfo.centroidStatus = pdu->msgBody.centroidRefreshBody->centroidStatus;
+				centroidInfo.centroidScore = pdu->msgBody.centroidRefreshBody->centroidScore;
+				centroidInfo.refreshCount = pdu->msgBody.centroidRefreshBody->refreshCount;
+			};
+
+			thisNode.localInterface->CALLBACK_receive_centroidInfo(thisNode.localInterface->get_interfaceType(), &centroidInfo);
+
+			break;
+
+		case SUPERNODE:
+		case SUPERNODE_REFRESH:
+			superNodeInfo.msgType = pdu->header.msgType;
+			superNodeInfo.PDU_number = pdu->header.PDU_number;
+			superNodeInfo.PDU_size = pdu->header.PDU_size;
+			superNodeInfo.timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(GP_SUPERNODE_TIMETOLIVE));
+			superNodeInfo.PDU_TTL = pdu->header.PDU_TTL;
+			superNodeInfo.protTraceRef = pdu->protTraceRef;
+
+			if (pdu->header.msgType == SUPERNODE) {
+				superNodeInfo.reissue = pdu->msgBody.superNodeBody->reissue;
+				superNodeInfo.origNode = pdu->msgBody.superNodeBody->sourceNode;
+				superNodeInfo.version = pdu->msgBody.superNodeBody->version;
+				superNodeInfo.superNodeRef = pdu->msgBody.superNodeBody->superNodeRef;
+			}
+			else {
+				superNodeInfo.origNode = pdu->msgBody.superNodeRefreshBody->sourceNode;
+				superNodeInfo.version = pdu->msgBody.superNodeRefreshBody->version;
+				superNodeInfo.superNodeRef = pdu->msgBody.superNodeRefreshBody->superNodeRef;
+				superNodeInfo.refreshCount = pdu->msgBody.superNodeRefreshBody->refreshCount;
+			};
+
+			thisNode.localInterface->CALLBACK_receive_superNodeInfo(thisNode.localInterface->get_interfaceType(), &superNodeInfo);
+
+			break;
+
+		case LINK_ABSTRACTION:
+		case LINK_ABST_REFRESH:
+
+			linkAbstractionInfo.msgType = pdu->header.msgType;
+			linkAbstractionInfo.PDU_number = pdu->header.PDU_number;
+			linkAbstractionInfo.PDU_size = pdu->header.PDU_size;
+			linkAbstractionInfo.timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(GP_LINKABST_TIMETOLIVE));
+			linkAbstractionInfo.PDU_TTL = pdu->header.PDU_TTL;
+			linkAbstractionInfo.numberDest = pdu->header.numberDest;
+			linkAbstractionInfo.protTraceRef = pdu->protTraceRef;
+
+			if (linkAbstractionInfo.numberDest != 0) {
+
+				for (i = 0; i < linkAbstractionInfo.numberDest; i++) {
+					linkAbstractionInfo.destNodes[i] = pdu->header.destNode[i].nodeId;
+				}
+
+			}
+			else {
+				linkAbstractionInfo.destNodes[0] = this->reset_anotherIdentity();
+			};
+
+			if (pdu->header.msgType == LINK_ABSTRACTION) {
+				linkAbstractionInfo.reissue = pdu->msgBody.linkAbstBody->reissue;
+				linkAbstractionInfo.origNode = pdu->msgBody.linkAbstBody->sourceNode;
+				linkAbstractionInfo.version = pdu->msgBody.linkAbstBody->version;
+				linkAbstractionInfo.linkAbstraction = pdu->msgBody.linkAbstBody->linkAbstraction;
+				linkAbstractionInfo.domainLevel = pdu->msgBody.linkAbstBody->domainLevel;
+				linkAbstractionInfo.linkId = pdu->msgBody.linkAbstBody->linkId;
+			}
+			else {
+				linkAbstractionInfo.origNode = pdu->msgBody.linkAbstRefreshBody->sourceNode;
+				linkAbstractionInfo.version = pdu->msgBody.linkAbstRefreshBody->version;
+				linkAbstractionInfo.refreshCount = pdu->msgBody.linkAbstRefreshBody->refreshCount;
+				linkAbstractionInfo.linkAbstraction = pdu->msgBody.linkAbstRefreshBody->linkAbstraction;
+				linkAbstractionInfo.linkId = pdu->msgBody.linkAbstRefreshBody->linkId;
+			};
+
+			thisNode.localInterface->CALLBACK_receive_linkAbstractionInfo(thisNode.localInterface->get_interfaceType(), &linkAbstractionInfo);
+
+			break;
+
+		case REISSUE:
+			reissueInfo.initialized = false;
+			reissueInfo.msgType = pdu->header.msgType;
+			reissueInfo.PDU_number = pdu->header.PDU_number;
+			reissueInfo.PDU_size = pdu->header.PDU_size;
+			reissueInfo.PDU_TTL = pdu->header.PDU_TTL;
+			reissueInfo.origNode = pdu->msgBody.reissueBody->sourceNode;
+			reissueInfo.issueNode = pdu->msgBody.reissueBody->issueNode;
+			reissueInfo.reissueMsg = pdu->msgBody.reissueBody->reissueMsg;
+			reissueInfo.version = pdu->msgBody.reissueBody->version;
+			reissueInfo.refreshCount = pdu->msgBody.reissueBody->refreshCount;
+			reissueInfo.protTraceRef = pdu->protTraceRef;
+			reissueInfo.linkAbstraction = pdu->msgBody.reissueBody->linkAbstraction;
+			reissueInfo.linkId = pdu->msgBody.reissueBody->linkId;
+			thisNode.localInterface->CALLBACK_receive_reissueInfo(thisNode.localInterface->get_interfaceType(), &reissueInfo);
+
+			break;
+
+		default:
+			SYSTEM->runtimerror(&get_identity(), "CALLBACK_process_rxPDUs", "Invalid_messsage_type", SYS_ERR_HARD);
+	};
+
+	recPDUs++;
+	recMsgTypes[(int) pdu->header.msgType]++;
+	pdu->copiesReceived++;
+	if (SYS_protTrace == true && pdu->header.msgType != HELLO) { SYSTEM->report_protTraceEvent(&thisNode.node->nodeId, &thisNode.localInterface->get_nodeInfRef()->get_identity(), RECEIVER, pdu);}				
+
+	if (pdu->copiesReceived == pdu->copiesSent) {
+		deletePDU(pdu);
+	}
+
+};
+
+int GenericProtocol::send_PDU(GenericPDU_s *pdu) { // Only EXT_NODETOPOLOGY, EXT_TOPOLOGY_REFRESH, CENTROID, CENTROID_REFRESH, SUPERNODE, and SUPERNODE_REFRESH PDUs can be sent.
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, send_PDU\n");}
+
+	if (protocolRunning == false) {
+		SYSTEM->runtimerror(&get_identity(), "send_PDU", "protocol_is_not_running", SYS_ERR_HARD);
+		return (-1);
+	}
+
+	// Prepare all other header fields except for msgType, TTL, and destinations
+	pdu->copiesSent = pdu->copiesReceived = 0;
+	//  protTraceRef to be initialized by the object which inititiated the transmission of this PDU
+	pdu->header.msgClass = GENERIC;
+	pdu->header.protocolVersion = GENERIC_PROTOCOL_VERSION;
+	pdu->header.sourceNode.nodeId = thisNode.node->nodeId;
+	pdu->header.sourceNode.nodeInfId = thisNode.localInterface->get_nodeInfRef()->get_identity();
+	pdu->header.PDU_number = PDU_Counter++;
+
+	queue_PDU_tx(pdu);
+
+	return(0);
+};
+
+
+void GenericProtocol::reset() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, reset\n");}
+	int i;
+
+	PDU_Counter = 1;
+	sentPDUs = recPDUs = 0;
+
+	for (i = 0; i < MAX_MESSAGETYPES; i++) {
+		sentMsgTypes[i] = recMsgTypes[i] = 0;
+	}
+	
+	if (sendQueue != 0) {
+		sendQueue->flush_queue();
+	}
+
+	if (recQueue != 0) {
+		recQueue->flush_queue();
+	}
+
+};
+
+
+void GenericProtocol::dealloc_memory() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, dealloc_memory\n");}
+
+	if (sendQueue != 0) { sendQueue->PDU_Queue_delete(); delete sendQueue; sendQueue = 0; };
+	if (recQueue != 0) { recQueue->PDU_Queue_delete(); delete recQueue; recQueue = 0; };
+};
+
+int GenericProtocol::deletePDU(GenericPDU_s *pdu) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("GenericProtocol, deletePDU\n");}
+	GenericMsgType deletedMsgType;
+
+	deletedMsgType = pdu->header.msgType;
+
+	switch (deletedMsgType) {
+
+		case HELLO:
+			delete pdu->msgBody.helloBody;
+			break;
+		case EXT_NODETOPOLOGY:
+			delete pdu->msgBody.extNodeTopBody;
+			break;
+		case EXT_TOPOLOGY_REFRESH:
+			delete pdu->msgBody.extTopRefreshBody;
+			break;
+		case CENTROID:
+			delete pdu->msgBody.centroidBody;
+			break;
+		case CENTROID_REFRESH:
+			delete pdu->msgBody.centroidRefreshBody;
+			break;
+		case SUPERNODE:
+			delete pdu->msgBody.superNodeBody;
+			break;
+		case SUPERNODE_REFRESH:
+			delete pdu->msgBody.superNodeRefreshBody;
+			break;
+		case LINK_ABSTRACTION:
+			delete pdu->msgBody.linkAbstBody;
+			break;
+		case LINK_ABST_REFRESH:
+			delete pdu->msgBody.linkAbstRefreshBody;
+			break;
+		case REISSUE:
+			delete pdu->msgBody.reissueBody;
+			break;
+		default:
+			SYSTEM->runtimerror(&get_identity(), "deletePDU", "invalid_msgType", SYS_ERR_HARD);
+			return(-1);
+	};
+
+	delete pdu;
+	return(0);
+};
+
+ostream &operator<<(ostream &stream, GenericProtocol *gp) {
+	Entity *enp;
+
+	enp = gp;
+
+	stream << "GenericProtocol_Status:\n" << enp;
+	stream << "Protocol running: " << gp->protocolRunning << " PDU counter: " << gp->PDU_Counter << " Sent PDUs: " << gp->sentPDUs << " Received PDUs: " << gp->recPDUs << "\n";
+
+	if (gp->thisNode.localInterface->get_interfaceType() == INF_EXTERNAL) {
+		stream << "Sent msg types: ";
+		stream << "HELLO: " << gp->sentMsgTypes[1] << ", EXTNODETOP: " << gp->sentMsgTypes[2] << ", EXTTOPREFRESH: " << gp->sentMsgTypes[3] << ", CENTROID: " << gp->sentMsgTypes[4] << ", CENTROIDREFRESH: ";
+		stream << gp->sentMsgTypes[5] << ", SUPERNODE: " << gp->sentMsgTypes[6] << ", SUPERNODEREFRESH: " << gp->sentMsgTypes[7] << ", LINKABSTRACTION: " << gp->sentMsgTypes[8] << ", LINKABSTREFRESH " << gp->sentMsgTypes[9] << "\n";
+		stream << "Received msg types: ";
+		stream << "HELLO: " << gp->recMsgTypes[1] << ", EXTNODETOP: " << gp->recMsgTypes[2] << ", EXTTOPREFRESH: " << gp->recMsgTypes[3] << ", CENTROID: " << gp->recMsgTypes[4] << ", CENTROIDREFRESH: ";
+		stream << gp->recMsgTypes[5] << ", SUPERNODE: " << gp->recMsgTypes[6] << ", SUPERNODEREFRESH: " << gp->recMsgTypes[7] << ", LINKABSTRACTION: " << gp->recMsgTypes[8] << ", LINKABSTREFRESH " << gp->recMsgTypes[9] << "\n";
+		stream << "\n";
+	};
+
+	if (gp->sendQueue != 0) {
+		stream << gp->sendQueue;
+	}
+	
+	if (gp->recQueue != 0) {
+		stream << gp->recQueue;
+	}
+
+	stream << "End_GenericProtool_Status\n";
+	return stream;
+};
+
+// CLASS HORNODEINTERFACE FUNCTIONS
+void HorNodeInterface::HorNodeInterface_init(Identity_s *id, InterfaceType type, DomainLevel infDomainLevel, Node *nodeRef, NodeInterface *nodeInf, NodeInfo_s *nodeInfo, HorNodeInterfaceTraits_s infTraits, unsigned int ttl) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, init\n");}
+
+	Identity_s horNodeInfResId;
+
+	infType = type;
+	interfaceDomainLevel = infDomainLevel;
+	localNode = nodeRef;
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	localNodeInf = nodeInf;
+	localNodeInfo = nodeInfo;
+	Entity_init(id, ttl, 0);
+	protocol = 0;
+
+	horNodeInfResId.type = "INTERFACERES";
+	horNodeInfResId.nickName = "-";
+
+	horNodeInfRes.InterfaceRes_init(&horNodeInfResId, infTraits.infHorTraits, infTraits.attPointTraits, infTraits.genInfTraits);
+};
+
+void HorNodeInterface::HorNodeInterface_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, delete\n");}
+
+	AttachedLink_s internalLink;
+
+	internalLink = this->isLinkAttached();
+
+	if (internalLink.link != 0) {
+		internalLink.link->detach_node(internalLink.linkEndpoint);
+
+		if (this->infType == INF_INTERNAL) { // Only those link endpoints that have been created by the nodes/swicthcores shall be deleted
+			internalLink.link->remove_linkEndpoint(internalLink.linkEndpoint);
+			internalLink.linkEndpoint->LinkEndpoint_delete();
+			delete internalLink.linkEndpoint;
+		}
+
+	};
+
+	if (protocol != 0) {
+		protocol->GenericProtocol_delete();
+		delete protocol;
+		protocol = 0;
+	};
+
+	this->Entity_delete();
+};
+
+int HorNodeInterface::start_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, start_interface\n");}
+
+	// Check that a link is attached to the external interface
+	if (attachedLink.link != 0) {
+		protocol->start_protocol();
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "start_interface", "no_link_attached", SYS_ERR_HARD);
+		return(-1);
+	}
+};
+
+int HorNodeInterface::stop_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, stop_interface\n");}
+
+	if (protocol != 0) {
+		protocol->stop_protocol();
+	}
+
+	return(0);
+};
+
+bool HorNodeInterface::is_interfaceRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, is_interfaceRunning\n");}
+
+	if (protocol != 0) {
+		return(protocol->is_protocolRunning());
+	}
+	else {
+		return (false);
+	};
+
+};
+
+int HorNodeInterface::set_interfaceDomainLevel(DomainLevel infDomainLevel) {  // Please note, overwrites whatever level that might have been dynamically set by the interace
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, set_interfaceDomainLevel\n");}
+	interfaceDomainLevel = infDomainLevel;
+	return(0);
+};
+
+bool HorNodeInterface::is_domainInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, is_domainInterface\n");}
+	
+	if (interfaceDomainLevel >= localNodeInfo->nodeTraits.domainLevel) {
+		return(false);
+	}
+	else {
+		return(true);
+	};
+
+};
+
+DomainLevel HorNodeInterface::get_interfaceDomainLevel() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, get_interfaceDomainLevel\n");}
+	return(interfaceDomainLevel);
+};
+
+int HorNodeInterface::attach_link(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, attach_link\n");}
+
+	Identity_s protocolId;
+	GenProtQLength_s qLength;
+	unsigned int ttl;
+
+	attachedLink.link = link;
+	attachedLink.linkEndpoint = linkEndpoint;
+
+	protocolId.type = "GENERICPROTOCOL";
+	protocolId.nickName = "-";
+		
+	try {
+		protocol = new GenericProtocol;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&get_identity(), "attach_link", "memory_allocation_failure", SYS_ERR_HARD);
+		return (-1);
+	}
+
+	qLength.rxQ = horNodeInfRes.get_infTraits().queueRxLength;
+	qLength.txQ = horNodeInfRes.get_infTraits().queueTxLength;
+
+	if (this->get_timeToLive().tickPoint == 0) {
+		ttl = 0;
+	}
+	else {
+		ttl = SYSTEM->ticksToMs(SYSTEM->subTicks(this->get_timeToLive(), SYSTEM->getTicks()));
+	};
+
+	protocol->GenericProtocol_init(&protocolId, localNode, localNodeInfo, this, attachedLink.link, attachedLink.linkEndpoint, qLength, ttl);
+
+	if (linkEndpoint->get_linkDataDir() != TRANSMITTER) {
+		link->attach_node(&localNodeInfo->nodeId, &localNodeInf->get_identity(), linkEndpoint, protocol);
+	}
+	else {
+		link->attach_node(&localNodeInfo->nodeId, &get_identity(), linkEndpoint, (CallbackProtocol *) 0);
+	};
+		
+	return(0);
+
+};
+
+int HorNodeInterface::detach_link(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, detach_link\n");}
+
+	link->detach_node(attachedLink.linkEndpoint);
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	protocol->GenericProtocol_delete();
+	delete protocol;
+	protocol = 0;
+	return(0);
+
+};
+
+int HorNodeInterface::update_ownNodeTopInfo(MsgBody_ExtNodeTop_s *ownTopInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, update_ownNodeTopInfo\n");}
+	localNodeInf->update_ownNodeTopInfo(ownTopInfo);
+	return(0);
+};
+
+int HorNodeInterface::send_PDU(GenericPDU_s *pdu) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, send_PDU\n");}
+
+	if (protocol != 0) {
+		
+		if (protocol->is_protocolRunning() == true) {
+			protocol->send_PDU(pdu);
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&this->get_identity(), "send_PDU", "protocol_is_not_running", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		SYSTEM->runtimerror(&this->get_identity(), "send_PDU", "protocol_not_started", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+void HorNodeInterface::CALLBACK_receive_neighborInfo(InterfaceType infType, NeighborNodeInfo_s *neighbor) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACK_receive_neighborInfo\n");}
+	localNodeInf->CALLBACK_receive_neighborInfo(infType, neighbor);
+};
+
+void HorNodeInterface::CALLBACK_receive_extNodeTopInfo(InterfaceType infType, ExtNodeTopInfo_s *extNodeTop) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACK_receive_extNodeTopInfo\n");}
+	localNodeInf->CALLBACK_receive_extNodeTopInfo(infType, extNodeTop);
+};
+
+void HorNodeInterface::CALLBACK_receive_centroidInfo(InterfaceType infType, CentroidInfo_s *centroidInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACK_receiev_centroidInfo\n");}
+	localNodeInf->CALLBACK_receive_centroidInfo(infType, centroidInfo);
+};
+
+void HorNodeInterface::CALLBACK_receive_superNodeInfo(InterfaceType infType, SuperNodeInfo_s *superNodeInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACK_receive_superNodeInfo\n");}
+	localNodeInf->CALLBACK_receive_superNodeInfo(infType, superNodeInfo);
+};
+
+void HorNodeInterface::CALLBACK_receive_linkAbstractionInfo(InterfaceType infType, LinkAbstractionInfo_s *linkAbstractionInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACL_receive_linkAbstractionInfo\n");}
+	localNodeInf->CALLBACK_receive_linkAbstractionInfo(infType, linkAbstractionInfo);
+};
+
+void HorNodeInterface::CALLBACK_receive_reissueInfo(InterfaceType infType, ReissueInfo_s *reissueInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, CALLBACL_receive_reissueInfo\n");}
+	localNodeInf->CALLBACK_receive_reissueInfo(infType, reissueInfo);
+};
+InterfaceType HorNodeInterface::get_interfaceType() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, get_interfaceType\n");}
+	return(infType);
+};
+
+bool HorNodeInterface::isLinkAttached(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, isLinkAttached\n");}
+
+	if (attachedLink.link != 0) {
+
+		if (globalNameSpace->check_ifEqual(attachedLink.link->get_identity().name, link->get_identity().name) == true) {
+			return (true);
+		}
+		else {
+			return (false);
+		}
+
+	}
+	else {
+		return (false);
+	}
+
+};
+
+AttachedLink_s HorNodeInterface::isLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, isLinkAttached\n");}
+	return(attachedLink);
+};
+
+HorNodeInterfaceTraits_s HorNodeInterface::get_horNodeInfTraits() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, get_horNodeInfTraits\n");}
+
+	HorNodeInterfaceTraits_s horNodeInfTraits;
+
+	horNodeInfTraits.genInfTraits = horNodeInfRes.get_genericTraits();
+	horNodeInfTraits.attPointTraits = horNodeInfRes.get_traits();
+	horNodeInfTraits.infHorTraits = horNodeInfRes.get_infTraits();
+	return(horNodeInfTraits);
+};
+
+NodeInterface *HorNodeInterface::get_nodeInfRef() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, get_nodeInfRef\n");}
+	return(localNodeInf);
+};
+
+int HorNodeInterface::check_attPointCompatibility(Link *link, LinkEndpoint *linkEndp) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("HorNodeInterface, check_attPointCompatibility\n");}
+
+	if (horNodeInfRes.get_traits().flowdir == linkEndp->get_linkEndpointTraits().attPointTraits.flowdir) {
+		
+		if (horNodeInfRes.get_traits().beacon == linkEndp->get_linkEndpointTraits().attPointTraits.beacon) {
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "check_attPointCompatibility", "Incompatible_attachmentpoint_traits", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "check_attPointCompatibility", "Incompatible_attachmentpoint_traits", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+
+void HorNodeInterface::CALLBACK_tickZero(void * parameters, int secret) {  // This function is not in use
+};
+
+ostream &operator<<(ostream &stream, HorNodeInterface *hi) {
+	Entity *enp;
+	Identity_s id;
+
+	enp = hi;
+	stream << "HorNodeInterface_Status:\n" << enp;
+	stream << "  Interface type: " << hi->infType << " Domain level: " << hi->interfaceDomainLevel << "\n";
+
+	if (hi->protocol != 0) {
+		stream << hi->protocol;
+		id = hi->attachedLink.link->get_identity();
+		stream << " Attached link: " << id.type << " / " << id.nickName << " / " << hi->attachedLink.link->get_identity().name.name;
+		id = hi->attachedLink.linkEndpoint->get_identity();
+		stream << " Linkendpoint: " << id.type << " / " << id.nickName << " / " << id.name.name;
+		stream << "\n";
+	}
+	else {
+		stream << " Interface is not running\n";
+	};
+
+	stream << "End_HorNodeInterface_Status\n";
+	return stream;
+};
+
+// CLASS VERNODEINTERFACE FUNCTIONS
+void VerNodeInterface::VerNodeInterface_init(Identity_s *id, InterfaceType type, Node *nodeRef, NodeInterface *nodeInf, NodeInfo_s *nodeInfo, VerNodeInterfaceTraits_s infTraits, unsigned int ttl) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, init\n");}
+
+	Identity_s verNodeInfResId;
+
+	infType = type;
+	localNode = nodeRef;
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	localNodeInf = nodeInf;
+	localNodeInfo = nodeInfo;
+	Entity_init(id, ttl, 0);
+	interfaceRunning = false;
+
+	verNodeInfResId.type = "INTERFACERES";
+	verNodeInfResId.nickName = "-";
+
+	verNodeInfRes.InterfaceRes_init(&verNodeInfResId, infTraits.infVerTraits, infTraits.attPointTraits, infTraits.genInfTraits);
+};
+
+void VerNodeInterface::VerNodeInterface_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, delete\n");}
+	AttachedLink_s internalLink;
+
+	internalLink = this->isLinkAttached();
+
+	if (internalLink.link != 0) {
+		internalLink.link->detach_node(internalLink.linkEndpoint);
+		internalLink.link->remove_linkEndpoint(internalLink.linkEndpoint);
+		internalLink.linkEndpoint->LinkEndpoint_delete();
+		delete internalLink.linkEndpoint;
+	};
+
+	this->Entity_delete();
+};
+
+int VerNodeInterface::start_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, start_interface\n");}
+
+	// Check that a link is attached to the external interface
+	if (attachedLink.link != 0) {
+		interfaceRunning = true;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "start_interface", "no_link_attached", SYS_ERR_HARD);
+		return(-1);
+	}
+};
+
+int VerNodeInterface::stop_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, stopInterface\n");}
+	interfaceRunning = false;
+	return(0);
+};
+
+bool VerNodeInterface::is_interfaceRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, is_interfaceRunning\n");}
+	return(interfaceRunning);
+};
+
+int VerNodeInterface::attach_link(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, attach_link\n");}
+
+	attachedLink.link = link;
+	attachedLink.linkEndpoint = linkEndpoint;
+
+	if (linkEndpoint->get_linkDataDir() != TRANSMITTER) {
+		link->attach_node(&localNodeInfo->nodeId, &get_identity(), linkEndpoint, this);
+	}
+	else {
+		link->attach_node(&localNodeInfo->nodeId, &get_identity(), linkEndpoint, (CallbackInterface *) 0);
+	};
+		
+	return(0);
+
+};
+
+int VerNodeInterface::detach_link(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, detachLink\n");}
+
+	link->detach_node(attachedLink.linkEndpoint);
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	interfaceRunning = false;
+	return(0);
+
+};
+
+int VerNodeInterface::send_PDU(GenericPDU_s *pdu) {  // UNDER DESIGN!!!
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, send_PDU\n");}
+
+	if (interfaceRunning == true) { // PDU can be sent
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "send_PDU", "Interface_is_not_running", SYS_ERR_HARD);
+		return (-1);
+	};
+
+	return(0);
+};
+
+bool VerNodeInterface::isLinkAttached(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, isLinkAttached\n");}
+
+	if (attachedLink.link != 0) {
+
+		if (globalNameSpace->check_ifEqual(attachedLink.link->get_identity().name, link->get_identity().name) == true) {
+			return (true);
+		}
+		else {
+			return (false);
+		}
+
+	}
+	else {
+		return (false);
+	}
+
+};
+
+AttachedLink_s VerNodeInterface::isLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, isLinkAttached\n");}
+	return(attachedLink);
+};
+
+VerNodeInterfaceTraits_s VerNodeInterface::get_verNodeInfTraits() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, get_verNodeInfTraits\n");}
+
+	VerNodeInterfaceTraits_s verNodeInfTraits;
+
+	verNodeInfTraits.genInfTraits = verNodeInfRes.get_genericTraits();
+	verNodeInfTraits.attPointTraits = verNodeInfRes.get_traits();
+	verNodeInfTraits.infVerTraits = verNodeInfRes.get_infTraits();
+	return(verNodeInfTraits);
+};
+
+NodeInterface *VerNodeInterface::get_nodeInfRef() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("VerNodeInterface, get_nodeInfRef\n");}
+	return(localNodeInf);
+};
+
+void VerNodeInterface::CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor) {
+	// Not used
+};
+
+void VerNodeInterface::CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop) {
+	// Not used
+};
+
+void VerNodeInterface::CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo) {
+	// Not used
+};
+
+void VerNodeInterface::CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo) {
+	// Not used
+};
+
+void VerNodeInterface::CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo) {
+	// Not used
+};
+void VerNodeInterface::CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo) {
+	// Not used
+};
+void VerNodeInterface::CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data) {
+	// Still to be implemented
+};
+
+void VerNodeInterface::CALLBACK_tickZero(void * parameters, int secret) {  // This function is not in use
+};
+
+ostream &operator<<(ostream &stream, VerNodeInterface *vi) {
+	Entity *enp;
+	Identity_s id;
+
+	enp = vi;
+	stream << "VerNodeInterface_Status:\n" << enp;
+	stream << "  Interface type: " << vi->infType;
+
+	if (vi->is_interfaceRunning() == true) {
+		id = vi->attachedLink.link->get_identity();
+		stream << " Attached link: " << id.type << " / " << id.nickName << " / " << id.name.name;
+		id = vi->attachedLink.linkEndpoint->get_identity();
+		stream << " Linkendpoint: " << id.type << " / " << id.nickName << " / " << id.name.name;
+		stream << "\n";
+	}
+	else {
+		stream << " Interface is not running\n";
+	};
+
+	stream << "End_VerNodeInterface_Status\n";
+	return stream;
+};
+
+// CLASS SWITCHCOREINTERFACE FUNCTIONS
+void SwitchCoreInterface::SwitchCoreInterface_init(Identity_s *id, InterfaceType type, SwitchCore *switchRef, NodeInfo_s *nodeInfo, SwitchCoreInterfaceTraits_s infTraits, unsigned int ttl) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, init\n");}
+
+	Identity_s switchCoreInfResId;
+
+	infType = type;
+	localSwitch = switchRef;
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	localNodeInfo = nodeInfo;
+	Entity_init(id, ttl, 0);
+	protocol = 0;
+
+	switchCoreInfResId.type = "INTERFACERES";
+	switchCoreInfResId.nickName = "-";
+
+	switchCoreInfRes.InterfaceRes_init(&switchCoreInfResId, infTraits.switchCoreInfTraits, infTraits.attPointTraits, infTraits.genInfTraits);
+};
+
+void SwitchCoreInterface::SwitchCoreInterface_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, delete\n");}
+	AttachedLink_s internalLink;
+
+	internalLink = this->isLinkAttached();
+
+	if (internalLink.link != 0) {
+		internalLink.link->detach_node(internalLink.linkEndpoint);
+		internalLink.link->remove_linkEndpoint(internalLink.linkEndpoint);
+		internalLink.linkEndpoint->LinkEndpoint_delete();
+		delete internalLink.linkEndpoint;
+	};
+
+	if (protocol != 0) {
+		protocol->GenericProtocol_delete();
+		delete protocol;
+		protocol = 0;
+	};
+
+	this->Entity_delete();
+};
+
+int SwitchCoreInterface::attach_link(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, attach_link\n");}
+
+	Identity_s protocolId;
+	GenProtQLength_s qLength;
+	unsigned int ttl;
+
+	attachedLink.link = link;
+	attachedLink.linkEndpoint = linkEndpoint;
+
+	protocolId.type = "GENERICPROTOCOL";
+	protocolId.nickName = "-";
+		
+	try {
+		protocol = new GenericProtocol;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&get_identity(), "attach_link", "memory_allocation_failure", SYS_ERR_HARD);
+		return (-1);
+	}
+
+	qLength.rxQ = switchCoreInfRes.get_infTraits().queueRxLength;
+	qLength.txQ = switchCoreInfRes.get_infTraits().queueTxLength;
+
+	if (this->get_timeToLive().tickPoint == 0) {
+		ttl = 0;
+	}
+	else {
+		ttl = SYSTEM->ticksToMs(SYSTEM->subTicks(this->get_timeToLive(), SYSTEM->getTicks()));
+	};
+
+	protocol->GenericProtocol_init(&protocolId, localSwitch, localNodeInfo, this, attachedLink.link, attachedLink.linkEndpoint, qLength, ttl);
+
+
+	link->attach_node(&localSwitch->get_identity(), &this->get_identity(), linkEndpoint, protocol);
+		
+	return(0);
+
+};
+
+int SwitchCoreInterface::detach_link(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, detach_link\n");}
+	link->detach_node(attachedLink.linkEndpoint);
+	attachedLink.link = 0;
+	attachedLink.linkEndpoint = 0;
+	protocol->GenericProtocol_delete();
+	delete protocol;
+	protocol = 0;
+	return(0);
+};
+
+int SwitchCoreInterface::start_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, start_interface\n");}
+
+	// Check that a link is attached to the external interface
+	if (attachedLink.link != 0) {
+		protocol->start_protocol();
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "start_interface", "no_link_attached", SYS_ERR_HARD);
+		return(-1);
+	}
+};
+
+int SwitchCoreInterface::stop_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, stop_interface\n");}
+	protocol->stop_protocol();
+	return(0);
+};
+
+InterfaceType SwitchCoreInterface::get_interfaceType() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, get_interfaceType\n");}
+	return(infType);
+};
+
+bool SwitchCoreInterface::is_interfaceRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, is_interfaceRunning\n");}
+	
+	if (protocol != 0) {
+		return(protocol->is_protocolRunning());
+	}
+	else {
+		return (false);
+	};
+
+};
+
+bool SwitchCoreInterface::isLinkAttached(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, isLinkAttached\n");}
+
+	if (attachedLink.link != 0) {;
+
+		if (globalNameSpace->check_ifEqual(attachedLink.link->get_identity().name, link->get_identity().name) == true) {
+			return (true);
+		}
+		else {
+			return (false);
+		}
+
+	}
+	else {
+		return (false);
+	}
+
+};
+
+AttachedLink_s SwitchCoreInterface::isLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, isLinkAttached\n");}
+	return(attachedLink);
+};
+
+SwitchCoreInterfaceTraits_s SwitchCoreInterface::get_switchCoreInfTraits() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SwitchCoreInterface, get_switchCoreInfTraits\n");}
+	SwitchCoreInterfaceTraits_s switchCoreInfTraits;
+
+	switchCoreInfTraits.genInfTraits = switchCoreInfRes.get_genericTraits();
+	switchCoreInfTraits.attPointTraits = switchCoreInfRes.get_traits();
+	switchCoreInfTraits.switchCoreInfTraits = switchCoreInfRes.get_infTraits();
+	return(switchCoreInfTraits);
+};
+
+void SwitchCoreInterface::CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor) {
+	// Not used
+};
+
+void SwitchCoreInterface::CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop) {
+	// Not used
+};
+
+void SwitchCoreInterface::CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo) {
+	// Not used
+};
+
+void SwitchCoreInterface::CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo) {
+	// Not used
+};
+
+void SwitchCoreInterface::CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo) {
+	// Not used
+};
+void SwitchCoreInterface::CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo) {
+	// Not used
+};
+void SwitchCoreInterface::CALLBACK_receive_dataInfo(InterfaceType type, DataInfo_s *data) {
+	// Still to be implemented
+};
+
+void SwitchCoreInterface::CALLBACK_tickZero(void * parameters, int secret) {  // This function is not in use
+};
+ostream &operator<<(ostream &stream, SwitchCoreInterface *si) {
+	Entity *enp;
+	Identity_s id;
+
+	enp = si;
+	stream << "SwitchCoreInterface_Status:\n" << enp;
+	stream << "  Interface type: " << si->infType;
+
+	if (si->protocol != 0) {
+		stream << si->protocol;
+		id = si->attachedLink.link->get_identity();
+		stream << " Attached link: " << id.type << " / " << id.nickName << " / " << id.name.name;
+		id = si->attachedLink.linkEndpoint->get_identity();
+		stream << " Linkendpoint: " << id.type << " / " << id.nickName << " / " << id.name.name;
+		stream << "\n";
+	}
+	else {
+		stream << " Interface is not running\n";
+	};
+
+	stream << "End_SwitchCoreInterface_Status\n";
+	return stream;
+};
+
+// CLASS NODEINTERFACE FUNCTIONS
+void NodeInterface::NodeInterface_init(Identity_s *id, DomainLevel infDomainLevel, Node *nodeRef, NodeInterfaceTraits_s nodeInfTraits, unsigned int ttl) { // Can also be viewed as a registration of a node interface.
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, init\n");}
+
+	Identity_s identityInt, identityExt, identityDown;
+	VerNodeInterfaceTraits_s verticalNodeInfTraits;
+	HorNodeInterfaceTraits_s horNodeIntInfTraits, horNodeExtInfTraits;
+
+	interfaceDomainLevel = infDomainLevel;
+	localNode = nodeRef;
+	localNodeInfo = localNode->get_myNodeInfo();
+	interfaceTicks = SYSTEM->msToTick(NODEINF_BACKGROUND_POLL);
+	verticalNodeInfTraits.genInfTraits = horNodeIntInfTraits.genInfTraits = horNodeExtInfTraits.genInfTraits = nodeInfTraits.genInfTraits;
+	verticalNodeInfTraits.infVerTraits = nodeInfTraits.infVerTraits;
+	verticalNodeInfTraits.attPointTraits = nodeInfTraits.attPointVerTraits;
+	horNodeIntInfTraits.infHorTraits = nodeInfTraits.infIntTraits;
+	horNodeIntInfTraits.attPointTraits = nodeInfTraits.attPointIntTraits;
+	horNodeExtInfTraits.infHorTraits = nodeInfTraits.infExtTraits;
+	horNodeExtInfTraits.attPointTraits = nodeInfTraits.attPointExtTraits;
+	
+	identityInt.type = "HORNODEINTERFACE";
+	identityInt.nickName = "-";
+	interfaceInt.HorNodeInterface_init(&identityInt, INF_INTERNAL, interfaceDomainLevel, localNode, this, localNodeInfo, horNodeIntInfTraits, 0);
+	identityExt.type = "HORNODEINTERFACE";
+	identityExt.nickName = "-";
+	interfaceExt.HorNodeInterface_init(&identityExt, INF_EXTERNAL, interfaceDomainLevel, localNode, this, localNodeInfo, horNodeExtInfTraits, 0);
+	identityDown.type = "VERNODEINTERFACE";
+	identityDown.nickName = "-";
+	interfaceDown.VerNodeInterface_init(&identityDown, INF_DOWN, localNode, this, localNodeInfo, verticalNodeInfTraits, 0);
+	infVerTraits = verticalNodeInfTraits;
+	firstInterfaceUp = 0;
+	Entity_init(id, ttl, 0);
+
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(interfaceTicks), CB_NODEINF, 0);
+};
+
+void NodeInterface::NodeInterface_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, delete\n");}
+	InterfaceUpInfo_s *interfaceUp, *oldInterfaceUp;
+
+	// Link endpoints will also be deleted for all links created by the nodes/switchcores themselves as part of deleting an interface
+	interfaceExt.HorNodeInterface_delete();
+	interfaceInt.HorNodeInterface_delete();
+	interfaceDown.VerNodeInterface_delete();
+
+	interfaceUp = firstInterfaceUp;
+
+	while (interfaceUp != 0) {
+		interfaceUp->infUp->VerNodeInterface_delete();
+		delete interfaceUp->infUp;
+		oldInterfaceUp = interfaceUp;
+		interfaceUp = interfaceUp->nextItem;
+		delete oldInterfaceUp;
+	};
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+		callbackRef = -1;
+		cout << "NodeInf Callback\n";
+	}
+
+	this->Entity_delete();
+};
+
+int NodeInterface::attach_linkExt(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, attach_linkExt\n");}
+	// One should check whether the link exists!
+
+	if (link->isLinkEndpoint_installed(linkEndpoint) == true) {
+
+		if (interfaceExt.check_attPointCompatibility(link, linkEndpoint) == 0) {
+			interfaceExt.attach_link(link, linkEndpoint);
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "attach_linkExt","Incompatible_attachmentpoints", SYS_ERR_SOFT);
+			return(-1);
+		};
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "attach_linkExt","Invalid_link_endpoint", SYS_ERR_HARD);
+		return(-1);
+	}
+
+};
+
+int NodeInterface::detach_linkExt(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, detach_linkExt\n");}
+
+	if (interfaceExt.isLinkAttached(link) == true) {
+		interfaceExt.detach_link(link);
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "detach_linkExt","Invalid_link_reference_or_link_already_detached", SYS_ERR_HARD);
+		return (-1);
+	}
+
+};
+
+int NodeInterface::attach_linkInt(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, attach_linkInt\n");}
+	// One should check whether the link exists!
+
+	if (link->isLinkEndpoint_installed(linkEndpoint) == true) {
+		interfaceInt.attach_link(link, linkEndpoint);
+		
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "attach_linkInt","Invalid_link_endpoint", SYS_ERR_HARD);
+		return(-1);
+	}
+
+};
+
+int NodeInterface::detach_linkInt(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, detach_linkInt\n");}
+
+	if (interfaceInt.isLinkAttached(link) == true) {
+		interfaceInt.detach_link(link);
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "detach_linkInt","Invalid_link_reference_or_link_already_detached", SYS_ERR_HARD);
+		return (-1);
+	}
+
+};
+
+int NodeInterface::attach_linkVerDown(Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, attach_linkVerDown\n");}
+	// One should check whether the link exists!
+
+	if (link->isLinkEndpoint_installed(linkEndpoint) == true) {
+		interfaceDown.attach_link(link, linkEndpoint);
+		
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "attach_linkVerDown","Invalid_link_endpoint", SYS_ERR_HARD);
+		return(-1);
+	}
+
+};
+
+int NodeInterface::detach_linkVerDown(Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, detach_linkVerDown\n");}
+
+	if (interfaceDown.isLinkAttached(link) == true) {
+		interfaceDown.detach_link(link);
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "detach_linkVerDown","Invalid_link_reference_or_link_alreqady_detached", SYS_ERR_HARD);
+		return (-1);
+	}
+
+};
+
+int NodeInterface::attach_linkVerUp(Identity_s *infUpId, Link *link, LinkEndpoint *linkEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, attach_linkVerUp\n");}
+
+	InterfaceUpInfo_s *interfaceUp;
+	VerNodeInterface *foundInfUp;
+	// One should check whether the link exists!
+
+	interfaceUp = firstInterfaceUp;
+	foundInfUp = 0;
+
+	while (interfaceUp != 0 && foundInfUp == 0) {
+
+		if (globalNameSpace->check_ifEqual(interfaceUp->infUp->get_identity().name, infUpId->name) == true) {
+			foundInfUp = interfaceUp->infUp;
+		}
+
+	}
+
+	if (foundInfUp != 0) {
+	
+		if (link->isLinkEndpoint_installed(linkEndpoint) == true) {
+			foundInfUp->attach_link(link, linkEndpoint);
+		
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "attach_linkVerUp","Invalid_link_endpoint", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "attach_linkVerUp","Invalid_interface_id", SYS_ERR_HARD);
+		return(-1);
+	};
+
+
+};
+
+int NodeInterface::detach_linkVerUp(Identity_s *infUpId, Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, detach_linkVerUp\n");}
+
+	InterfaceUpInfo_s *interfaceUp;
+	VerNodeInterface *foundInfUp;
+
+	interfaceUp = firstInterfaceUp;
+	foundInfUp = 0;
+
+	while (interfaceUp != 0 && foundInfUp == 0) {
+
+		if (globalNameSpace->check_ifEqual(interfaceUp->infUp->get_identity().name, infUpId->name) == true) {
+			foundInfUp = interfaceUp->infUp;
+		}
+
+	}
+
+	if (foundInfUp != 0) {
+
+		if (foundInfUp->isLinkAttached(link) == true) {
+			foundInfUp->detach_link(link);
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "detach_linkVerUp","Invalid_link_reference_or_link_already_detached", SYS_ERR_HARD);
+			return (-1);
+		}
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(), "detach_linkVerUp","Invalid_interface_Id", SYS_ERR_HARD);
+		return (-1);
+	}
+
+};
+
+NodeInterfaceTraits_s NodeInterface::get_nodeInterfaceTraits() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, get_nodeInterfaceTraits\n");}
+	NodeInterfaceTraits_s nodeInfTraits;
+
+	nodeInfTraits.genInfTraits = infVerTraits.genInfTraits;
+	nodeInfTraits.infVerTraits = infVerTraits.infVerTraits;
+	nodeInfTraits.infExtTraits = interfaceExt.get_horNodeInfTraits().infHorTraits;
+	nodeInfTraits.infIntTraits = interfaceInt.get_horNodeInfTraits().infHorTraits;
+
+	return (nodeInfTraits);
+};
+
+AttachedLink_s NodeInterface::isExtLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isExtLinkAttached\n");}
+	return(interfaceExt.isLinkAttached());
+};
+
+AttachedLink_s NodeInterface::isIntLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isIntLinkAttached\n");}
+	return(interfaceInt.isLinkAttached());
+};
+
+AttachedLink_s NodeInterface::isDownLinkAttached() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isDownLinkAttached\n");}
+	return(interfaceDown.isLinkAttached());
+};
+
+AttachedLink_s NodeInterface::isUpLinkAttached(Identity_s *infUpId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isUpLinkAttached\n");}
+
+	InterfaceUpInfo_s *interfaceUp;
+	VerNodeInterface *foundInfUp;
+	AttachedLink_s attachedLink;
+
+	interfaceUp = firstInterfaceUp;
+	foundInfUp = 0;
+
+	while (interfaceUp != 0 && foundInfUp == 0) {
+
+		if (globalNameSpace->check_ifEqual(interfaceUp->infUp->get_identity().name, infUpId->name) == true) {
+			foundInfUp = interfaceUp->infUp;
+		}
+
+	}
+
+	if (foundInfUp != 0) {
+		return(foundInfUp->isLinkAttached());
+	}
+	else {
+		SYSTEM->runtimerror(&this->get_identity(), "isUplinkAttached", "Invalid_interface_id", SYS_ERR_SOFT);
+		attachedLink.link = 0;
+		attachedLink.linkEndpoint = 0;
+		return(attachedLink);
+	};
+
+};
+
+int NodeInterface::start_extInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, start_extInterface\n");}
+	interfaceExt.start_interface();
+	if (SYS_eventTrace == true) {SYSTEM->eventTrace(&this->get_identity(), &this->localNode->get_identity(), SYS_LL_MEDIUM, "Ext_nodeinterface_started", 0, 0, 0, 0);}
+	return (0);
+};
+
+int NodeInterface::stop_extInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, stop_extInterface\n");}
+	interfaceExt.stop_interface();
+	if (SYS_eventTrace == true) {SYSTEM->eventTrace(&this->get_identity(), &this->localNode->get_identity(), SYS_LL_MEDIUM, "Ext_nodeinterface_stopped", 0, 0, 0, 0);}
+	return(0);
+};
+
+int NodeInterface::start_intInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, start_intInterface\n");}
+	interfaceInt.start_interface();
+	return (0);
+};
+
+int NodeInterface::stop_intInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, stop_intInterface\n");}
+	interfaceInt.stop_interface();
+	return(0);
+};
+
+bool NodeInterface::isExtInterfaceRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isExtInterfaceRunning\n");}
+	return(interfaceExt.is_interfaceRunning());
+};
+
+bool NodeInterface::isIntInterfaceRunning() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, isIntInterfaceRunning\n");}
+	return(interfaceInt.is_interfaceRunning());
+};
+
+int NodeInterface::set_interfaceDomainLevel(DomainLevel infDomainLevel) {  // Please note, overwrites whatever level that might have been dynamically set by the interace
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, set_interfaceDomainLevel\n");}
+	interfaceDomainLevel = infDomainLevel;
+	interfaceInt.set_interfaceDomainLevel(infDomainLevel);  // Should not be needed!!!
+	interfaceExt.set_interfaceDomainLevel(infDomainLevel);
+	return(0);
+};
+
+DomainLevel NodeInterface::get_interfaceDomainLevel() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, get_interfaceDomainLevel\n");}
+	return(interfaceDomainLevel);
+};
+
+bool NodeInterface::is_domainInterface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, is_domainInterface\n");}
+	
+	if (interfaceDomainLevel >= localNodeInfo->nodeTraits.domainLevel) {
+		return(false);
+	}
+	else {
+		return(true);
+	};
+
+};
+
+int NodeInterface::update_ownNodeTopInfo(MsgBody_ExtNodeTop_s *ownTopInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, update_ownNodeTopInfo\n");}
+	localNode->update_ownNodeTopStatus(ownTopInfo);
+	return(0);
+};
+
+int NodeInterface::send_PDU(InterfaceType infType, GenericPDU_s *pdu) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, send_PDU\n");}
+
+	if (infType == INF_EXTERNAL) {
+		interfaceExt.send_PDU(pdu);
+	}
+	else {
+		interfaceInt.send_PDU(pdu);
+	};
+
+	return(0);
+};
+
+void NodeInterface::CALLBACK_receive_neighborInfo(InterfaceType type, NeighborNodeInfo_s *neighbor) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receiev_neighborInfo\n");}
+	localNode->update_neighborStatus(this, neighbor);
+};
+
+void NodeInterface::CALLBACK_receive_extNodeTopInfo(InterfaceType type, ExtNodeTopInfo_s *extNodeTop) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receive_extNodeTopInfo\n");}
+	localNode->update_extNodeTopStatus(this, extNodeTop);
+};
+
+void NodeInterface::CALLBACK_receive_centroidInfo(InterfaceType type, CentroidInfo_s *centroidInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receiev_centroidInfo\n");}
+	localNode->update_centroidStatus(this, centroidInfo);
+};
+
+void NodeInterface::CALLBACK_receive_superNodeInfo(InterfaceType type, SuperNodeInfo_s *superNodeInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receive_superNodeInfo\n");}
+	localNode->update_superNodeStatus(this, superNodeInfo);
+};
+
+void NodeInterface::CALLBACK_receive_linkAbstractionInfo(InterfaceType type, LinkAbstractionInfo_s *linkAbstractionInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receive_linkAbstractionInfo\n");}
+	localNode->pass_linkAbstractionInfo(&get_identity(), &localNodeInfo->nodeId, linkAbstractionInfo);
+};
+
+void NodeInterface::CALLBACK_receive_reissueInfo(InterfaceType type, ReissueInfo_s *reissueInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_receive_reissueInfo\n");}
+	localNode->reissueMsgMgmt(this, reissueInfo);
+};
+
+void NodeInterface::CALLBACK_tickZero(void *parameters, int sectret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&get_identity(), &this->localNodeInfo->nodeId);}
+	CALLBACK_update_interface();
+	
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(interfaceTicks), CB_NODEINF, 0);
+};
+
+void NodeInterface::CALLBACK_update_interface() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, CALLBACK_update_interface\n");}
+	AttachedLink_s extLink;
+	LinkAbstInfo_s *linkAbstInfo;
+	InterfaceUpInfo_s *infUpInfo, *newInfUpInfo, *lastInfUpInfo, *oldInfUpInfo;
+	VerNodeInterface *verNodeInf;
+	LinkEndpoint *linkEndpoint;
+	LinkEndpointTraits_s linkEndpointTraits;
+	VerNodeInterfaceTraits_s upInfTraits;
+	Identity_s verNodeInfId, linkEndpointId;
+	ReissueInfo_s *reissueInfo;
+	GenericPDU_s *pdu;
+	MsgBody_Reissue_s *reissueBody;
+
+	// This function polls link abstractions for matching underlying linkIds for which there could be a reason to create an up interface and to connect to the vertical link
+	extLink = interfaceExt.isLinkAttached();
+
+	if (extLink.link != 0) {
+
+		linkAbstInfo = localNode->get_nextLinkAbstFromSN(&extLink.link->get_identity(), 0, false);
+
+		while (linkAbstInfo != 0) {
+			infUpInfo = this->find_infUp(&linkAbstInfo->horLinkRef->get_identity(), 0);
+
+			if (infUpInfo != 0) {
+				infUpInfo->timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(INF_UP_TIMETOLIVE));
+			}
+			else {  // This is a new link abstraction for which there is no matching up interface, thus needs to be created
+				
+				if (linkAbstInfo->verLinkRef->get_currentNumberLinkEndpoints() <  MAX_LINKENDPOINTS_VL) {  // Check if an endpoint can be added; if not just put interface creation on hold until the existing interface has timed out
+
+					try {
+						newInfUpInfo = new InterfaceUpInfo_s;
+					} catch (bad_alloc xa) {
+						SYSTEM->runtimerror(&get_identity(), "CALLBACK_update_interface","allocation_failure", SYS_ERR_HARD);
+					}
+
+					newInfUpInfo->initialized = false;
+
+					try {
+						verNodeInf = new VerNodeInterface;
+					} catch (bad_alloc xa) {
+						SYSTEM->runtimerror(&get_identity(), "CALLBACK_update_interface","allocation_failure", SYS_ERR_HARD);
+					}
+	
+					verNodeInfId.type = "VERNODEINTERFACE";
+					verNodeInfId.nickName = "-";
+					upInfTraits.genInfTraits.completionTime = upInfTraits.genInfTraits.mtbf = 0;
+					upInfTraits.infVerTraits.queueRxLength = upInfTraits.infVerTraits.queueTxLength = 0;
+					verNodeInf->VerNodeInterface_init(&verNodeInfId, INF_UP, localNode, this, localNode->get_myNodeInfo(), upInfTraits, 0);
+
+					try {
+						linkEndpoint = new LinkEndpoint;
+					} catch (bad_alloc xa) {
+						SYSTEM->runtimerror(&get_identity(), "CALLBACK_update_interface","allocation_failure", SYS_ERR_HARD);
+					}
+
+					linkEndpointId.type = "LINKENDPOINT";
+					linkEndpointId.nickName = "-";
+					linkEndpointTraits.genTraits.completionTime = 0;
+					linkEndpointTraits.genTraits.mtbf = 0;
+					linkEndpointTraits.attPointTraits.flowdir = TRANCEIVER;
+					linkEndpointTraits.attPointTraits.beacon = false;
+					linkEndpoint->LinkEndpoint_init(&linkEndpointId, linkEndpointTraits, 0);
+
+					if (linkAbstInfo->verLinkRef->get_currentNumberLinkEndpoints() == 2) {
+						cout << "verLinkEndpoints == 2";
+					}
+
+					linkAbstInfo->verLinkRef->add_linkEndpoint(linkEndpoint);
+					verNodeInf->attach_link(linkAbstInfo->verLinkRef, linkEndpoint);
+
+					newInfUpInfo->infUp = verNodeInf;
+					newInfUpInfo->upLink = linkAbstInfo->verLinkRef;
+					newInfUpInfo->upLinkEndp = linkEndpoint;
+					newInfUpInfo->linkAbstractionId = linkAbstInfo->horLinkRef->get_identity();
+					newInfUpInfo->superNodeId = localNode->get_superNodeId();
+					newInfUpInfo->timeToLive = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(INF_UP_TIMETOLIVE));
+
+					// Find last infUpInfo item
+					infUpInfo = firstInterfaceUp;
+
+					if (infUpInfo == 0) {  // This is the first up interface
+						newInfUpInfo->previousItem = newInfUpInfo->nextItem = 0;
+						firstInterfaceUp = newInfUpInfo;
+					}
+					else {
+
+						while (infUpInfo != 0) {
+							lastInfUpInfo = infUpInfo;
+							infUpInfo = infUpInfo->nextItem;
+						}
+
+						lastInfUpInfo->nextItem = newInfUpInfo;
+						newInfUpInfo->previousItem = lastInfUpInfo;
+						newInfUpInfo->nextItem = 0;
+
+					};
+
+					newInfUpInfo->initialized = true;
+				}
+
+			};  // ENDIF infUpInfo
+
+			linkAbstInfo = localNode->get_nextLinkAbstFromSN(&extLink.link->get_identity(), 0, false);
+		};  // ENDWHILE linkAbstInfo
+
+		// Check also for reissue request for link abstraction messages from the superNode
+		reissueInfo = localNode->get_nextReissueReqFromSN(LINK_ABSTRACTION, &extLink.link->get_identity(), false);
+
+		while (reissueInfo != 0) {
+			try {
+				pdu = new GenericPDU_s;
+				reissueBody = new MsgBody_Reissue_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "CALLBACK_update_interface", "memory_allocation_failure", SYS_ERR_HARD);
+			}
+
+			pdu->protTraceRef = 0;
+			pdu->header.msgType = REISSUE;
+			pdu->header.PDU_TTL = localNode->get_netNeighborhood();
+			pdu->header.PDU_size = sizeof(GenericPDU_Reissue_s);
+			pdu->header.numberDest = 1;
+			pdu->header.destNode[0].nodeId = reissueInfo->issueNode;
+			pdu->header.destNode[0].nodeInfId = this->reset_anotherIdentity();
+			pdu->header.sourceNode.nodeId = localNode->get_identity();   // Actually not needed to be filled in here, but needed for the protTrace
+			pdu->header.sourceNode.nodeInfId = get_identity();
+//			pdu->protTraceRef = SYSTEM->init_protTrace(pdu, 0, REISSUE);
+			pdu->protTraceRef = 0;
+
+			reissueBody->issueNode = reissueInfo->issueNode;
+			reissueBody->sourceNode = *localNode->get_superNodeInfo();
+			reissueBody->reissueMsg = reissueInfo->reissueMsg;
+			reissueBody->version = reissueInfo->version;
+			reissueBody->refreshCount = reissueInfo->refreshCount;
+			reissueBody->linkAbstraction = reissueInfo->linkAbstraction;
+			reissueBody->linkId = reissueInfo->linkId;
+			pdu->msgBody.reissueBody = reissueBody;
+			interfaceExt.send_PDU(pdu);
+			reissueInfo->processed = true;
+
+			reissueInfo = localNode->get_nextReissueReqFromSN(LINK_ABSTRACTION, &extLink.link->get_identity(), false);
+		}  // ENDWHILE reissueInfo
+
+	}  // ENDIF extLink
+
+	//  Remove all up interfaces where info has timed out
+
+	infUpInfo = firstInterfaceUp;
+
+	while (infUpInfo != 0) {
+
+		oldInfUpInfo = 0;
+
+		if (infUpInfo->timeToLive.tickPoint < SYSTEM->getTicks().tickPoint) {  // This up interface shall be removed
+			infUpInfo->infUp->detach_link(infUpInfo->upLink);
+			infUpInfo->upLink->remove_linkEndpoint(infUpInfo->upLinkEndp);
+			infUpInfo->infUp->VerNodeInterface_delete();  // Will also remove the link endpoint, if link still attached!!!
+			delete infUpInfo->infUp;
+
+			if (infUpInfo->upLink->isAnyNodeAttached() == false) {
+				infUpInfo->upLink->Link_delete();
+				delete infUpInfo->upLink;
+			}
+
+			oldInfUpInfo = infUpInfo;
+
+			if (infUpInfo == firstInterfaceUp) {
+
+				if (firstInterfaceUp->nextItem != 0) {
+					infUpInfo->nextItem->previousItem = 0;
+				}
+
+				firstInterfaceUp = infUpInfo->nextItem;
+			}
+			else if (infUpInfo->nextItem == 0) {  // last item
+				infUpInfo->previousItem->nextItem = 0;
+			}
+			else {
+				infUpInfo->previousItem->nextItem = infUpInfo->nextItem;
+				infUpInfo->nextItem->previousItem = infUpInfo->previousItem;
+			};
+
+		}
+
+		infUpInfo = infUpInfo->nextItem;
+
+		if (oldInfUpInfo != 0) {
+			delete oldInfUpInfo;
+		}
+
+	};  // ENDWHILE infUpInfo
+
+};
+
+InterfaceUpInfo_s *NodeInterface::find_infUp(Identity_s *linkAbstId, Identity_s *superNodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeInterface, find_infUp\n");}
+
+	InterfaceUpInfo_s *infUpInfo;
+	bool infUpInfoFound;
+
+	infUpInfo = firstInterfaceUp;
+
+	if (infUpInfo != 0) {
+		infUpInfoFound = false;
+		
+		while (infUpInfo != 0 && infUpInfoFound == false) {
+
+			if (globalNameSpace->check_ifEqual(infUpInfo->linkAbstractionId.name, linkAbstId->name) == true) {
+				infUpInfoFound = true;
+			}
+			else {
+				infUpInfo = infUpInfo->nextItem;
+			};
+
+		};
+
+	};
+
+	return(infUpInfo);
+};
+
+ostream &operator<<(ostream &stream, NodeInterface *ni) {
+	Entity *enp;
+	HorNodeInterface *infInt, *infExt;;
+	VerNodeInterface *infDown;
+	InterfaceUpInfo_s *infUpInfo;
+
+	enp = ni;
+	infInt = &ni->interfaceInt;
+	infExt = &ni->interfaceExt;
+	infDown = &ni->interfaceDown;
+	infUpInfo = ni->firstInterfaceUp;
+
+	stream << "NodeInterface_Status:\n" << enp;
+	stream << "Interface domain level: " << ni->interfaceDomainLevel << "\n";
+	stream << "  External interface: " << infExt; 
+	stream << "  Internal interface: " << infInt; 
+	stream << "  Down interface: " << infDown;
+
+	while (infUpInfo != 0) {
+		
+		if (infUpInfo->initialized == true) {
+			stream << "  Up interface: " << infUpInfo->infUp << "SuperNode Id(name): " << infUpInfo->superNodeId.name.name << "\n";
+		}
+
+		infUpInfo = infUpInfo->nextItem;
+	};
+
+	stream << "End_NodeInterface_Status\n";
+	return stream;
+};
+
