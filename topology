@@ -1,0 +1,2600 @@
+#include <iostream>
+#include <string>
+#include <new>
+using namespace std;
+
+#include "C:\Users\CLONEZILLA\Documents\Visual Studio 2008\Projects\Netcell_test\Netcell_test\definitions.h"
+
+
+// CLASS NODETOPOLOGY FUNCTIONS
+void NodeTopology::NodeTopology_init(Identity_s *id, Node *ownNodeRef) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, init\n");}
+
+	firstTopologyItem = nextTopologyItem = 0;
+	currentNodeInterface = 0;
+	currentNumberNodeInterfaces = 0;
+	identity.Identity_init(id);
+	neighborTicks = SYSTEM->msToTick(NODETOPOLOGY_INTERVAL);
+	nodeTopologyVersion = refreshCount = 0;
+	ticksDiff.tickPoint = 0;
+	localNodeRef = ownNodeRef;
+	lastTicksRead = SYSTEM->getTicks();
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(neighborTicks), CB_NODETOP, 0);
+
+}
+
+void NodeTopology::NodeTopology_delete() {  // This will also remove and delete all node interfaces, and delete the external link if node is NOT a core node
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, delete\n");}
+
+	NodeTopologyItem_s *nodeTopItem, *oldNodeTopItem;
+	NeighborNodeItem_s *neighborItem, *oldNeighborItem;
+
+	nodeTopItem = firstTopologyItem;
+
+	while (nodeTopItem != 0) {
+		oldNodeTopItem = nodeTopItem;
+		neighborItem = oldNodeTopItem->firstNeighborItem;
+
+		while (neighborItem != 0) {
+			oldNeighborItem = neighborItem;
+			neighborItem = neighborItem->nextItem;
+			delete oldNeighborItem;
+		};
+
+		nodeTopItem = nodeTopItem->nextNodeInf;
+		delete oldNodeTopItem;
+	};
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+		callbackRef = -1;
+		cout << "Nodetop Callback\n";
+	}
+
+};
+
+
+int NodeTopology::add_nodeInterface(NodeInterface *nodeInterface) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, add_nodeInterface\n");}
+
+	NodeTopologyItem_s *topologyItem, *newTopologyItem;
+	bool inList, lastItem;
+
+	// First check whether node interface is also in list.
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInterface->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			}
+		}
+	}
+
+	if (inList == false) { // Insert node interface into the topology
+		try {
+			newTopologyItem = new NodeTopologyItem_s;
+		} catch (bad_alloc xa) {
+			SYSTEM->runtimerror(&identity.get_identity(), "add_nodeInterface","allocation_failure", SYS_ERR_HARD);
+		}
+
+		if (firstTopologyItem == 0) {  // First node interface in list
+			firstTopologyItem = newTopologyItem;
+			firstTopologyItem->previousNodeInf = 0;
+			firstTopologyItem->nodeInterface = nodeInterface;
+			firstTopologyItem->linkBuilder = false;
+			firstTopologyItem->linkBuilder_timeout.tickPoint = 0;
+			firstTopologyItem->attachedExtLink = 0;
+			firstTopologyItem->localExtLinkEndpoint = 0;
+			firstTopologyItem->attachedIntLink = 0;
+			firstTopologyItem->localIntLinkEndpoint = 0;
+			firstTopologyItem->currentNumberNeighbors = 0;
+			firstTopologyItem->firstNeighborItem = 0;
+			firstTopologyItem->nextNodeInf = 0;
+			nextTopologyItem = firstTopologyItem;
+		}
+		else {
+			topologyItem->nextNodeInf = newTopologyItem;
+			newTopologyItem->previousNodeInf = topologyItem;
+			newTopologyItem->nodeInterface = nodeInterface;
+			newTopologyItem->linkBuilder = false;
+			newTopologyItem->linkBuilder_timeout.tickPoint = 0;
+			newTopologyItem->attachedExtLink = 0;
+			newTopologyItem->localExtLinkEndpoint = 0;
+			newTopologyItem->attachedIntLink = 0;
+			newTopologyItem->localIntLinkEndpoint = 0;
+			newTopologyItem->currentNumberNeighbors = 0;
+			newTopologyItem->firstNeighborItem = 0;
+			newTopologyItem->nextNodeInf = 0;
+		}
+
+		currentNumberNodeInterfaces++;
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "add_nodeInterface", "Node_interface_already_in_list", SYS_ERR_HARD);
+		return(-1);
+	}
+}; //END NODETOPOLOGY::ADD_NODEINTERFACE
+
+
+int NodeTopology::remove_nodeInterface(NodeInterface *nodeInterface) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, removeNodeInterface\n");}
+	NodeTopologyItem_s *topologyItem;
+	NeighborNodeItem_s *neighborItem, *oldNeighborItem;
+	bool inList, lastItem;
+
+	// First check whether node interface is also in list.
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInterface->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			}
+		}
+	}
+
+	if (inList == true) {
+		// Delete all neighbor items
+		neighborItem = topologyItem->firstNeighborItem;
+
+		while (neighborItem != 0) {
+			oldNeighborItem = neighborItem;
+			neighborItem = neighborItem->nextItem;
+			delete oldNeighborItem;
+		}
+
+		if (nextTopologyItem == topologyItem) {
+			nextTopologyItem = nextTopologyItem->nextNodeInf;
+		}
+
+		if (topologyItem == firstTopologyItem) {
+			firstTopologyItem = topologyItem->nextNodeInf;
+
+			if (firstTopologyItem != 0) {
+				firstTopologyItem->previousNodeInf = 0;
+			}
+
+		}
+		else if (topologyItem->nextNodeInf == 0) {  // last item
+			topologyItem->previousNodeInf->nextNodeInf = 0;
+		}
+		else {
+			topologyItem->previousNodeInf->nextNodeInf = topologyItem->nextNodeInf;
+			topologyItem->nextNodeInf->previousNodeInf = topologyItem->previousNodeInf;
+		};
+
+		delete topologyItem;
+		currentNumberNodeInterfaces--;
+
+		if (currentNumberNodeInterfaces == 0) {
+			firstTopologyItem = nextTopologyItem = 0;
+		}
+
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "remove_nodeInterface", " Node_interface_doesn't_exist", SYS_ERR_HARD);
+		return(-1);
+	};
+
+}; // END NODETOPOLOGY::REMOVE_NODEINTERFACE
+
+bool NodeTopology::isNodeInf_installed(NodeInterface *nodeInf) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, isNodeInf_installed\n");}
+
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			}
+		}
+	}
+
+	return(inList);
+
+};
+
+NodeTopologyItem_s *NodeTopology::find_nodeTopologyItem(NodeInterface *nodeInf) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, find_nodeTopologyItem\n");}
+
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			}
+		}
+	}
+
+	if (inList == true) {
+		return(topologyItem);
+	}
+	else {
+		return(0);
+	};
+
+};
+
+NodeInterface *NodeTopology::get_nodeInterface(Identity_s *linkId, Identity_s *nodeInfId) {  // Either of the iIDs must be 0, can't be both non-zero!
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, get_nodeInterface\n");}
+	NodeTopologyItem_s *topologyItem;
+	bool inList;
+
+	topologyItem = firstTopologyItem;
+	inList = false;
+
+	while (topologyItem != 0 && inList == false) {
+
+		if (linkId != 0) {
+			
+			if (topologyItem->attachedExtLink != 0) {
+
+				if (globalNameSpace->compare_names(linkId->name, topologyItem->attachedExtLink->get_identity().name) == true) {
+					inList = true;
+				}
+
+			}
+		
+			if (inList == false && topologyItem->attachedIntLink != 0) {
+
+				if (globalNameSpace->compare_names(linkId->name, topologyItem->attachedIntLink->get_identity().name) == true) {
+					inList = true;
+				}
+
+			}
+
+		}
+		else if (nodeInfId != 0) {
+				
+			if (globalNameSpace->compare_names(nodeInfId->name, topologyItem->nodeInterface->get_identity().name) == true) {
+				inList = true;
+			}
+
+		};
+
+		if (inList == false) {
+			topologyItem = topologyItem->nextNodeInf;
+		}
+
+	};  // ENDWHILE
+
+	if (inList == true) {
+		return(topologyItem->nodeInterface);
+	}
+	else {
+		return(0);
+	};
+
+};
+
+NodeInterface *NodeTopology::getNext_nodeInterface(bool reset) { // This function must never run in parallel with getNext_nodeTopItem!!! And must run until it returns a zero pointer
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, getNext_nodeInterface\n");}
+	NodeTopologyItem_s *currentTopologyItem;
+	
+	if (nextTopologyItem == 0 || reset == true) {
+		nextTopologyItem = firstTopologyItem;
+		return(0);
+	}
+	else {
+		currentTopologyItem = nextTopologyItem;
+		nextTopologyItem = nextTopologyItem->nextNodeInf;
+
+		return(currentTopologyItem->nodeInterface);
+	};
+
+};
+
+NodeTopologyItem_s *NodeTopology::getNext_nodeTopItem(bool reset) {  // This function must never run in parallel with getNext_nodeInterface!!! And must run until it returns a zero pointer
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, getNext_nodeTopItem\n");}
+
+	NodeTopologyItem_s *currentTopologyItem;
+
+	if (nextTopologyItem == 0 || reset == true) {
+		nextTopologyItem = firstTopologyItem;
+		return(0);
+	}
+	else {
+		currentTopologyItem = nextTopologyItem;
+		nextTopologyItem = nextTopologyItem->nextNodeInf;
+		return(currentTopologyItem);
+	};
+
+};
+
+int NodeTopology::get_nodeTopVersion() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, get_nodeTopVersion\n");}
+	return (nodeTopologyVersion);
+};
+
+int NodeTopology::get_refreshCount() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, get_refreshCount\n");}
+	return (refreshCount);
+};
+
+int NodeTopology::add_extLink(NodeInterface *nodeInterface, Link *link, LinkEndpoint *localEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, add_extLink\n");}
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInterface->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			};
+		};
+	};
+
+	if (inList == true) {
+		topologyItem->attachedExtLink = link;
+		topologyItem->localExtLinkEndpoint = localEndpoint;
+		topologyItem->linkBuilder_timeout = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(LINKBUILDER_TIMEOUT));
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "add_extLink", "Invalid_node_interface,_not_installed", SYS_ERR_HARD);
+		return (-1);
+	};
+
+};
+
+int NodeTopology::remove_extLink(NodeInterface *nodeInf, Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, remove_extLink\n");}
+	// The second parameter (link) is redundant.
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			};
+		};
+	};
+
+	if (inList == true) {
+		topologyItem->attachedExtLink = 0;
+		topologyItem->localExtLinkEndpoint = 0;
+		topologyItem->linkBuilder = false;
+		topologyItem->linkBuilder_timeout.tickPoint = 0;
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "remove_extLink", "Invalid_node_interface,_not_installed", SYS_ERR_HARD);
+		return (-1);
+	};
+
+};
+
+int NodeTopology::add_intLink(NodeInterface *nodeInterface, Link *link, LinkEndpoint *localEndpoint) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, add_intLink\n");}
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInterface->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			};
+		};
+	};
+
+	if (inList == true) {
+		topologyItem->attachedIntLink = link;
+		topologyItem->localIntLinkEndpoint = localEndpoint;
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "add_intLink", "Invalid_node_interface,_not_installed", SYS_ERR_HARD);
+		return (-1);
+	};
+
+};
+
+int NodeTopology::remove_intLink(NodeInterface *nodeInf, Link *link) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, remove_intLink\n");}
+	// The second parameter (link) is redundant.
+	NodeTopologyItem_s *topologyItem;	
+	bool inList, lastItem;
+
+	if (firstTopologyItem != 0) {
+		topologyItem = firstTopologyItem;
+		inList = lastItem = false;
+	}
+	else {
+		lastItem = true;
+		inList = false;
+	};
+
+	while (lastItem == false && inList == false) {
+		if (globalNameSpace->check_ifEqual(topologyItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			inList = true;
+		}
+		else {
+			if (topologyItem->nextNodeInf == 0) {
+				lastItem = true;
+			}
+			else {
+				topologyItem = topologyItem->nextNodeInf;
+			};
+		};
+	};
+
+	if (inList == true) {
+		topologyItem->attachedIntLink = 0;
+		topologyItem->localIntLinkEndpoint = 0;
+		nodeTopologyVersion++;
+		refreshCount = 0;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "remove_intLink", "Invalid_node_interface,_not_installed", SYS_ERR_HARD);
+		return (-1);
+	};
+
+};
+
+int NodeTopology::set_interfaceDomainLevel(NodeInterface *nodeInf, DomainLevel infDomainLevel) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, set_interfaceDomainLevel\n");}
+	NodeTopologyItem_s *nodeTopItem;
+	bool infFound;
+
+	nodeTopItem = firstTopologyItem;
+	infFound = false;
+
+	while (nodeTopItem != 0 && infFound == false) {
+
+		if (globalNameSpace->check_ifEqual(nodeTopItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			infFound = true;
+		}
+		else {
+			nodeTopItem = nodeTopItem->nextNodeInf;
+		};
+
+	};
+
+	if (infFound == true) {
+
+		if (infDomainLevel <= DL_UNASSIGNED) {
+
+			if (infDomainLevel != nodeTopItem->nodeInterface->get_interfaceDomainLevel()) {
+				nodeTopItem->nodeInterface->set_interfaceDomainLevel(infDomainLevel);
+				nodeTopologyVersion++;
+				refreshCount = 0;
+			}
+
+		}
+		else {
+			SYSTEM->runtimerror(&identity.get_identity(), "set_interfaceDomainLevel", "Invalid_domain_level", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "set_interfaceDomainLevel", "Invalid_nodeinterface", SYS_ERR_HARD);
+		return(-1);
+	};
+
+	return(0);
+};
+
+DomainLevel NodeTopology::get_interfaceDomainLevel(NodeInterface *nodeInf) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, get_interfaceDomainLevel\n");}
+	NodeTopologyItem_s *nodeTopItem;
+	bool infFound;
+
+	nodeTopItem = firstTopologyItem;
+	infFound = false;
+
+	while (nodeTopItem != 0 && infFound == false) {
+
+		if (globalNameSpace->check_ifEqual(nodeTopItem->nodeInterface->get_identity().name, nodeInf->get_identity().name) == true) {
+			infFound = true;
+		}
+		else {
+			nodeTopItem = nodeTopItem->nextNodeInf;
+		};
+
+	};
+
+	if (infFound == true) {
+		return(nodeTopItem->nodeInterface->get_interfaceDomainLevel());
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "get_interfaceDomainLevel", "Invalid_nodeinterface", SYS_ERR_HARD);
+		return(DL_UNASSIGNED);
+	};
+
+};
+
+bool NodeTopology::check_ifLinkBuilder(NodeInterface *nodeInf) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, check_ifLinkBuilder\n");}
+	return(find_nodeTopologyItem(nodeInf)->linkBuilder);
+};
+
+int NodeTopology::update_neighbors(NodeInterface *nodeInterface, NeighborNodeInfo_s *neighbor) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, update_neighbors\n");}
+	NodeTopologyItem_s *nodeTopologyItem;
+	NeighborNodeItem_s *neighborItem, *lastNeighborItem;
+	bool neighborFound;
+
+	if (isNodeInf_installed(nodeInterface) == true) {
+		// Find the nodeTopology item where the information shall be stored, i.e. the item which corresponds to the LinkId and the LinkEndpointId that might already be stored.
+		nodeTopologyItem = find_nodeTopologyItem(nodeInterface);
+
+		if (globalNameSpace->check_ifEqual(nodeTopologyItem->attachedExtLink->get_identity().name, neighbor->linkId.name) == true) {
+
+			if (nodeTopologyItem->firstNeighborItem == 0) { // This is first neighbor
+
+				try {
+					nodeTopologyItem->firstNeighborItem = new NeighborNodeItem_s;
+				} catch (bad_alloc xa) {
+					SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors","allocation_failure", SYS_ERR_HARD);
+					return(-1);
+				}
+
+				nodeTopologyItem->firstNeighborItem->previousItem = 0;
+				nodeTopologyItem->firstNeighborItem->neighbor = *neighbor;
+				nodeTopologyItem->currentNumberNeighbors++;
+				nodeTopologyItem->firstNeighborItem->neighbor.timeToLive = neighbor->timeToLive; // The interface only provides an incremental step for TimeToLive
+				nodeTopologyItem->firstNeighborItem->nextItem = 0;
+				nodeTopologyVersion++;
+				refreshCount = 0;
+				return(0);
+			}
+			else {
+				neighborItem = nodeTopologyItem->firstNeighborItem;
+				lastNeighborItem = neighborItem;
+				neighborFound = false;
+
+				while (neighborItem != 0 && neighborFound == false) {
+					Identity_s id;
+//					id = nodeTopologyItem->attachedExtLink->get_identity();
+//					cout << " Tickpoint: " << SYSTEM->getTicks().tickPoint << " Link: " << id.type << "/" << id.nickName << "/" << id.name.name << " endpoints: " << nodeTopologyItem->attachedExtLink->get_currentNumberLinkEndpoints(); 
+//					cout << " local node: " << this->localNodeRef->get_identity().nickName << " neighbor: " << nodeTopologyItem->firstNeighborItem->neighbor.remoteNode.nodeId.nickName << " new neighbor: " << neighbor->remoteNode.nodeId.nickName << "\n";
+//					SYSTEM->breakExecution(SYSTEM->getTicks());
+
+					if (globalNameSpace->check_ifEqual(neighborItem->neighbor.remoteInterfaceId.name, neighbor->remoteInterfaceId.name) == true) {
+						neighborFound = true;
+					}
+					else {
+					
+						if (neighborItem->nextItem == 0) {
+							lastNeighborItem = neighborItem;
+						}
+
+						neighborItem = neighborItem->nextItem;
+					}
+
+				};
+
+				if (neighborFound == false) {  // This is a new neighbor, and thus also new linkEndpoint
+
+					try {
+						neighborItem = new NeighborNodeItem_s;
+					} catch (bad_alloc xa) {
+						SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors","allocation_failure", SYS_ERR_HARD);
+						return(-1);
+					}
+
+					lastNeighborItem->nextItem = neighborItem;
+					neighborItem->previousItem = lastNeighborItem;
+					neighborItem->neighbor = *neighbor;
+					neighborItem->neighbor.timeToLive = neighbor->timeToLive; // The interface only provides an incremental step for TimeToLive
+					neighborItem->nextItem = 0;
+					nodeTopologyItem->currentNumberNeighbors++;
+					nodeTopologyVersion++;
+					refreshCount = 0;
+					return(0);
+				}
+				else { // This is an update of an existing neighbor
+					
+					if (globalNameSpace->check_ifEqual(neighborItem->neighbor.remoteLinkEndpointId.name, neighbor->remoteLinkEndpointId.name) == true) {
+						
+						if (globalNameSpace->check_ifEqual(neighborItem->neighbor.remoteNode.nodeId.name, neighbor->remoteNode.nodeId.name) == true) {
+							// Update TimeToLive!
+							neighborItem->neighbor.timeToLive = neighbor->timeToLive;
+							// Check if neighborInfo has changed
+							if (neighborItem->neighbor.linkBuilder != neighbor->linkBuilder || neighborItem->neighbor.remoteDomainLevel != neighbor->remoteDomainLevel || globalNameSpace->check_ifEqual(neighborItem->neighbor.remoteSuperNodeId.name, neighbor->remoteSuperNodeId.name) == false) {
+								neighborItem->neighbor.linkBuilder = neighbor->linkBuilder;
+								neighborItem->neighbor.remoteDomainLevel = neighbor->remoteDomainLevel;
+								neighborItem->neighbor.remoteSuperNodeId = neighbor->remoteSuperNodeId;
+
+								nodeTopologyVersion++;
+								refreshCount = 0;
+							}
+
+							return(0);
+						}
+						else {
+							SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors", "Remote_NodeIds_don't_match", SYS_ERR_HARD);
+							return(-1);
+						};  // Endif remoteNode
+					}
+					else {
+						SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors", "Remote_LinkEndpointIds_don't_match", SYS_ERR_HARD);
+						return(-1);
+					};  // Endif remoteLindEndpoint
+
+				};  // Endif neighborItem
+
+			};  // Endif firstNeighborItem
+		}
+		else {
+			SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors", "LinkIds_don't_match", SYS_ERR_HARD);
+			return(-1);
+		};  // Endif linkId
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "update_neighbors", "Node_interface_not_installed", SYS_ERR_HARD);
+		return(-1);
+	};  // Endif nodeInterface
+
+};  // END NODETOPOLOGY::UPDATE_NEIGHBORS
+
+NodeInterface *NodeTopology::check_ifNeighborExists(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, check_ifNeighborExists\n");}
+	// Will return the first node interface found where the neighbor is being listed
+	NodeTopologyItem_s *nodeTopItem;
+	NeighborNodeItem_s *neighborItem;
+	int i, numberNeighbors;
+	bool neighborFound;
+
+	nodeTopItem = firstTopologyItem;
+	neighborFound = false;
+
+	while (nodeTopItem != 0 && neighborFound == false) {
+		numberNeighbors = nodeTopItem->currentNumberNeighbors;
+		neighborItem = nodeTopItem->firstNeighborItem;
+
+		for (i = 0; i < numberNeighbors && neighborFound == false; i++) {
+
+			if (globalNameSpace->check_ifEqual(neighborItem->neighbor.remoteNode.nodeId.name, nodeId->name) == true) {
+				neighborFound = true;
+			}
+
+		};
+
+		nodeTopItem = nodeTopItem->nextNodeInf;
+	};
+
+	return(nodeTopItem->nodeInterface);
+
+};
+
+
+void NodeTopology::CALLBACK_tickZero(void *parameters, int secret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&identity.get_identity(), &this->localNodeRef->get_identity());}
+	CALLBACK_checkNeighborInfo();
+
+	ticksDiff.tickPoint += SYSTEM->subTicks(SYSTEM->getTicks(), lastTicksRead).tickPoint;
+	lastTicksRead = SYSTEM->getTicks();
+
+	if (ticksDiff.tickPoint > SYSTEM->msToTick(GP_EXTTOPOLOGY_INTERVAL).tickPoint) {
+		refreshCount++;
+		ticksDiff.tickPoint = 0;
+	};
+
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(neighborTicks), CB_NODETOP, 0);
+};
+
+void NodeTopology::CALLBACK_checkNeighborInfo() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("NodeTopology, CALLBACK_checkNeighborInfo\n");}
+	NodeTopologyItem_s *topologyItem;
+	NeighborNodeItem_s *neighborItem, *oldNeighborItem;
+	bool linkBuilder;
+
+	topologyItem = firstTopologyItem;
+
+	while (topologyItem != 0) {
+		neighborItem = topologyItem->firstNeighborItem;
+		linkBuilder = true;
+
+		while (neighborItem != 0) {
+
+			if (neighborItem->neighbor.timeToLive.tickPoint <= SYSTEM->getTicks().tickPoint) { // The item shall be removed
+				oldNeighborItem = neighborItem;
+
+				if (neighborItem == topologyItem->firstNeighborItem) {
+					
+					if (neighborItem->nextItem != 0) {
+						neighborItem->nextItem->previousItem = 0;
+						topologyItem->firstNeighborItem = neighborItem->nextItem;
+					}
+					else {
+						topologyItem->firstNeighborItem = 0;
+					};
+
+				}
+				else if (neighborItem->nextItem == 0) {  // last item
+					neighborItem->previousItem->nextItem = 0;
+				}
+				else {
+					neighborItem->previousItem->nextItem = neighborItem->nextItem;
+					neighborItem->nextItem->previousItem = neighborItem->previousItem;
+				};
+
+				neighborItem = neighborItem->nextItem;
+				nodeTopologyVersion++;
+				refreshCount = 0;
+				topologyItem->currentNumberNeighbors--;
+				delete oldNeighborItem;
+			}
+			else {
+
+				if (topologyItem->linkBuilder_timeout.tickPoint < SYSTEM->getTicks().tickPoint) {  // Link builder capability can be calculated for this neighbor
+//					cout << " topologyItem->linkBuilder_timeout < SYSTEM->getTicks()*TICKS_RESOLUTION ";
+
+					if (topologyItem->linkBuilder == false && linkBuilder == true) {
+//						cout << " topologyItem->linkBuilder == false && linkBuilder == true ";
+					
+						if (globalNameSpace->compare_names(neighborItem->neighbor.remoteNode.nodeId.name, localNodeRef->get_myNodeInfo()->nodeId.name) == true || neighborItem->neighbor.linkBuilder == true) {
+//							cout << " linkBuilder turns false!! !" << localNodeRef->get_myNodeInfo()->nodeId.name.name << " ";
+							linkBuilder = false;
+						}
+
+					}
+
+				}
+				else {
+					linkBuilder = false;
+				};
+						
+				neighborItem = neighborItem->nextItem;
+			};
+
+		};  // ENDWHILE neighborItem
+
+//		cout << " linkBuilder: " << linkBuilder << " ";
+		topologyItem->linkBuilder = linkBuilder;
+		topologyItem = topologyItem->nextNodeInf;
+
+	}; // ENDWHILE topologyItem
+
+};
+
+void NodeTopology::CALLBACK_checkTimeToLive() {  // This function is not in use
+};
+
+ostream &operator<<(ostream &stream, NodeTopology *nt) {
+	Identity *idp;
+	Identity_s id;
+	NodeTopologyItem_s *nodeTop;
+	NeighborNodeItem_s *neighbor;
+	int i;
+
+	nodeTop = nt->getNext_nodeTopItem(false);
+	idp = &nt->identity;
+	stream << "NodeTopology_Status:\n" << idp << "\n";
+	stream << "Node topology version: " << nt->nodeTopologyVersion << " Current number interfaces: " << nt->currentNumberNodeInterfaces << "\n";
+
+	while (nodeTop != 0) {
+		id = nodeTop->nodeInterface->get_identity();
+		stream << "  Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+		
+		if (nodeTop->attachedExtLink != 0) {
+			stream << "    External link, interface domain level: " << nodeTop->nodeInterface->get_interfaceDomainLevel();
+			id = nodeTop->attachedExtLink->get_identity();
+			stream << " Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+
+			if (nodeTop->currentNumberNeighbors != 0) {
+				stream << "    Current number neighbors: " << nodeTop->currentNumberNeighbors << "\n";
+				neighbor = nodeTop->firstNeighborItem;
+
+				for (i = 0; i < nodeTop->currentNumberNeighbors; i++) {
+					id = neighbor->neighbor.remoteNode.nodeId;
+					stream << "      Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+					neighbor = neighbor->nextItem;
+				};
+
+			}
+			else {
+				stream << "    There are no neighbors\n";
+			};
+
+		}
+		else {
+			stream << "    There is no external link attached\n";
+		};
+
+/* Internal links are reported via the switchcore reporting function
+		if (nodeTop->attachedIntLink != 0) {
+			stream << "Internal link";
+			id = nodeTop->attachedExtLink->get_identity();
+			stream << "Type: " << id.type << "Nickname: " << id.nickName << "Name: " << id.name.name << "\n";
+
+		}
+		else {
+			stream << "There is no internal link attached\n";
+		};
+*/
+		nodeTop = nt->getNext_nodeTopItem(false);
+	}; // ENDWHILE nodeTop
+
+	stream << "End_NodeTopology_Status\n";
+	return stream;
+};
+
+// CLASS REMOTENODETOPOLOGY FUNCTIONS
+void RemoteNodeTopology::RemoteNodeTopology_init(Identity_s *id, Node *nRef, NodeTopology *nodeTopRef) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, init\n");}
+
+	identity.Identity_init(id);
+	nodeRef = nRef;
+	nodeTopologyRef = nodeTopRef;
+
+	// The first topology item shall always be this node's topology
+	try {
+		firstTopologyItem = new RemoteNodeTopologyItem_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&identity.get_identity(), "RemoteNodeTopology_init","allocation_failure", SYS_ERR_HARD);
+	}
+
+	firstTopologyItem->nodeInf = 0;  // Not applicable
+	firstTopologyItem->refreshCount = 0;  // Will not be checked, and not updated
+	firstTopologyItem->reissueCount = 0;  // Will be updated when needed
+	firstTopologyItem->timeToLive.tickPoint = 0;  // Will not be checked
+	firstTopologyItem->remoteTopology.version = 1;  // Will not be checked, but updated
+	firstTopologyItem->remoteTopology.origNode = *(nodeRef->get_myNodeInfo());
+	firstTopologyItem->remoteTopology.nodeTopology.numberNodeInf = 0; // Will be updated later upon calling of update_ownNodeTopStatus
+	firstTopologyItem->previousItem = firstTopologyItem->nextItem = 0;
+	currentNumberNodeTopologies = 1;
+	nextTopologyItem = firstTopologyItem;
+	remoteTicks = SYSTEM->msToTick(REMOTETOPOLOGY_INTERVAL);
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(remoteTicks), CB_REMOTETOP, 0);
+};
+
+void RemoteNodeTopology::RemoteNodeTopology_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, delete\n");}
+	RemoteNodeTopologyItem_s *remTopItem, *oldRemTopItem;
+
+	remTopItem = firstTopologyItem;
+
+	while (remTopItem != 0) {
+		oldRemTopItem = remTopItem;
+		remTopItem = remTopItem->nextItem;
+		delete oldRemTopItem;
+	}
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+		callbackRef = -1;
+		cout << "RemoteNode Callback\n";
+	}
+
+};
+
+int RemoteNodeTopology::delete_remoteTopItem(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, delete_remoteTopItem\n");}
+	RemoteNodeTopologyItem_s *nodeTopItem;
+	
+	nodeTopItem = this->find_remoteTopItem(nodeId);
+
+	if (nodeTopItem != 0) {
+	
+		if (nextTopologyItem == nodeTopItem) {
+			nextTopologyItem = nextTopologyItem->nextItem;
+		}
+
+		if (nodeTopItem == firstTopologyItem) {
+			
+			if (nodeTopItem->nextItem != 0) {
+				nodeTopItem->nextItem->previousItem = 0;
+				firstTopologyItem = nodeTopItem->nextItem;
+			}
+			else {
+				firstTopologyItem = 0;
+			}
+
+		}
+		else if (nodeTopItem->nextItem == 0) {  // Last item
+			nodeTopItem->previousItem->nextItem = 0;
+		}
+		else {  // Somewhere inbetween
+			nodeTopItem->previousItem->nextItem = nodeTopItem->nextItem;
+			nodeTopItem->nextItem->previousItem = nodeTopItem->previousItem;
+		};
+
+		currentNumberNodeTopologies--;
+		delete nodeTopItem;
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "delete_remoteTopItem", "Can't_find_item", SYS_ERR_HARD);
+		return(-1);
+	};
+
+	return(0);
+};
+
+int RemoteNodeTopology::update_extNodeTopStatus(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, update_extNodeTopStatus\n");}
+	RemoteNodeTopologyItem_s *remoteTopItem;
+	ReissueInfo_s reissueInfo;
+
+	remoteTopItem = find_remoteTopItem(&extNodeTopInfo->origNode.nodeId);
+
+	if (remoteTopItem == 0 && extNodeTopInfo->msgType == EXT_NODETOPOLOGY) { // This is a new topology item
+		add_remoteTopItem(nodeInf, extNodeTopInfo);
+
+		// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received
+		if (extNodeTopInfo->PDU_TTL > 0) {
+			this->resend_PDU(nodeInf, extNodeTopInfo);
+		}
+	
+	}
+	else if (extNodeTopInfo->msgType == EXT_TOPOLOGY_REFRESH) {
+		// Check whether a reissueing might be needed
+		if (remoteTopItem == 0 || remoteTopItem->remoteTopology.version != extNodeTopInfo->version) {
+			reissueInfo.initialized = true;
+			reissueInfo.processed = false;
+			reissueInfo.issueNode = extNodeTopInfo->origNode.nodeId;
+			reissueInfo.reissueMsg = EXT_NODETOPOLOGY;
+			reissueInfo.version = extNodeTopInfo->version;
+			reissueInfo.refreshCount = extNodeTopInfo->refreshCount;
+			this->nodeRef->reissueMsgMgmt(nodeInf, &reissueInfo);
+		}
+		else { // A "normal" refresh
+
+			if (extNodeTopInfo->refreshCount > remoteTopItem->refreshCount) { // This is not a duplicate
+				remoteTopItem->nodeInf = nodeInf;
+				remoteTopItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+				remoteTopItem->timeToLive = extNodeTopInfo->timeToLive;
+				remoteTopItem->remoteTopology.version = extNodeTopInfo->version;  // Should not be necessary, i.e. should be the same version.
+				remoteTopItem->refreshCount = extNodeTopInfo->refreshCount;
+				
+				// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received
+				if (extNodeTopInfo->PDU_TTL > 0) {
+					this->resend_PDU(nodeInf, extNodeTopInfo);
+				}
+
+			}
+			else if (extNodeTopInfo->refreshCount == remoteTopItem->refreshCount && extNodeTopInfo->PDU_TTL > remoteTopItem->PDU_TTL) {  // This is a duplicate however recieved with a higher TTL which needs to be re-distributed to ensure proper dissemination
+				// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received, and except for the one for which the duplicate was received
+				
+				if (extNodeTopInfo->PDU_TTL > 0) {
+					this->resend_PDU(nodeInf, extNodeTopInfo);
+				}
+
+				remoteTopItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+				remoteTopItem->nodeInf = nodeInf;
+			}; // ENDIF check for duplicates
+
+		};
+
+	}
+	else if (extNodeTopInfo->msgType == EXT_NODETOPOLOGY) {
+		// Check whether received PDU is a duplicate of an already received PDU. If yes, it should be silently dropped.
+		if (extNodeTopInfo->version > remoteTopItem->remoteTopology.version) { // This is not a duplicate.
+			remoteTopItem->nodeInf = nodeInf;
+			remoteTopItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+			remoteTopItem->timeToLive = extNodeTopInfo->timeToLive;
+			remoteTopItem->refreshCount = 0;
+			remoteTopItem->remoteTopology.version = extNodeTopInfo->version;
+			remoteTopItem->remoteTopology.origNode = extNodeTopInfo->origNode;
+			remoteTopItem->remoteTopology.nodeTopology = extNodeTopInfo->origNodeTop;
+				
+			// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received
+			if (extNodeTopInfo->PDU_TTL > 0) {
+				this->resend_PDU(nodeInf, extNodeTopInfo);
+			}
+
+		}
+		else if (extNodeTopInfo->version == remoteTopItem->remoteTopology.version && extNodeTopInfo->PDU_TTL > remoteTopItem->PDU_TTL) {  // This is a duplicate however recieved with a higher TTL which needs to be re-distributed to ensure proper dissemination
+			// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received. This also takes of resending a resissueing request received with a higher TTL			
+			if (extNodeTopInfo->PDU_TTL > 0) {
+				this->resend_PDU(nodeInf, extNodeTopInfo);
+			}
+
+			remoteTopItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+			remoteTopItem->nodeInf = nodeInf;
+		}
+		else if (extNodeTopInfo->version == remoteTopItem->remoteTopology.version && extNodeTopInfo->reissue == true) {  // This is a reissue request, which needs to be resent, AND also seen as a refresh
+			remoteTopItem->timeToLive = extNodeTopInfo->timeToLive;
+			remoteTopItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+			remoteTopItem->nodeInf = nodeInf;
+
+			// Resend onto all other interfaces, if PDU_TTL > 0, except for the one at which the PDU was received.	
+			if (extNodeTopInfo->PDU_TTL > 0) {
+				this->resend_PDU(nodeInf, extNodeTopInfo);
+			}
+
+		}; // ENDIF check for duplicates
+
+	};  // ENDIF msgType
+
+	return (0);
+};
+
+int RemoteNodeTopology::resend_PDU(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, resend_PDU\n");}
+	NodeInterface *localNodeInf;
+	MsgBody_ExtNodeTop_s *extNodeTopBody;
+	MsgBody_ExtTopRefresh_s *extTopRefreshBody;
+	GenericPDU_s *pdu;
+
+	localNodeInf = nodeTopologyRef->getNext_nodeInterface(false);
+				
+	while (localNodeInf != 0) {
+
+		if (nodeInf != localNodeInf) {						
+
+			if (localNodeInf->isExtInterfaceRunning() == true) {							
+				try {
+					pdu = new GenericPDU_s;
+
+					if (extNodeTopInfo->msgType == EXT_NODETOPOLOGY) {
+						extNodeTopBody = new MsgBody_ExtNodeTop_s;
+					}
+					else {
+						extTopRefreshBody = new MsgBody_ExtTopRefresh_s;
+					}
+
+				} catch (bad_alloc xa) {
+					SYSTEM->runtimerror(&identity.get_identity(), "resend_PDU", "memory_allocation_failure", SYS_ERR_HARD);
+					return (-1);
+				}
+
+				pdu->header.msgType = extNodeTopInfo->msgType;
+				pdu->header.PDU_TTL = extNodeTopInfo->PDU_TTL;
+				pdu->header.numberDest = 0;
+				pdu->protTraceRef = extNodeTopInfo->protTraceRef;
+
+				if (extNodeTopInfo->msgType == EXT_NODETOPOLOGY) {
+					pdu->header.PDU_size = sizeof(GenericPDU_ExtNodeTop_s);
+					extNodeTopBody->version = extNodeTopInfo->version;
+					extNodeTopBody->reissue = extNodeTopInfo->reissue;
+					extNodeTopBody->sourceNode = extNodeTopInfo->origNode;
+					extNodeTopBody->nodeTopology = extNodeTopInfo->origNodeTop;
+					pdu->msgBody.extNodeTopBody = extNodeTopBody;
+				}
+				else {  // A refresh
+					pdu->header.PDU_size = sizeof(GenericPDU_ExtTopRefresh_s);
+					extTopRefreshBody->version = extNodeTopInfo->version;
+					extTopRefreshBody->refreshCount = extNodeTopInfo->refreshCount;
+					extTopRefreshBody->sourceNode = extNodeTopInfo->origNode;
+					pdu->msgBody.extTopRefreshBody = extTopRefreshBody;
+				};
+
+				localNodeInf->send_PDU(INF_EXTERNAL, pdu);
+			}
+
+		}
+
+		localNodeInf = nodeTopologyRef->getNext_nodeInterface(false);
+	}
+
+	return(0);
+};
+
+int RemoteNodeTopology::reissue_extNodeTopStatus(NodeInterface *nodeInf, ReissueInfo_s *reissueInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, reissue_extNodeTopStatus\n");}
+	// Increase reissueCount
+	firstTopologyItem->reissueCount++;
+	return(0);
+};
+
+
+int RemoteNodeTopology::update_ownNodeTopStatus(MsgBody_ExtNodeTop_s *ownNodeTop) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, update_ownNodeTopStatus\n");}
+	firstTopologyItem->remoteTopology.version = ownNodeTop->version;
+	firstTopologyItem->remoteTopology.nodeTopology = ownNodeTop->nodeTopology;
+	return(0);
+};
+
+RemoteNodeTopologyItem_s *RemoteNodeTopology::find_remoteTopItem(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, find_remoteTopItem\n");}
+	RemoteNodeTopologyItem_s *nodeTopItem;
+	bool inList;
+
+	nodeTopItem = firstTopologyItem;
+	inList = false;
+
+	while (nodeTopItem != 0 && inList == false) {
+		
+		if (globalNameSpace->check_ifEqual(nodeTopItem->remoteTopology.origNode.nodeId.name, nodeId->name) == true) {  // A node topology exists for this node
+			inList = true;
+		}
+		else {
+			nodeTopItem = nodeTopItem->nextItem;
+		};
+
+	};
+
+	return (nodeTopItem);
+
+};
+
+int RemoteNodeTopology::add_remoteTopItem(NodeInterface *nodeInf, ExtNodeTopInfo_s *extNodeTopInfo) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, add_remoteTopItem\n");}
+	RemoteNodeTopologyItem_s *nodeTopItem, *lastTopItem, *newTopologyItem;
+
+	// Find last item in list
+	nodeTopItem = firstTopologyItem;
+
+	while (nodeTopItem != 0) {
+		lastTopItem = nodeTopItem;
+		nodeTopItem = nodeTopItem->nextItem;
+	};
+
+	try {
+		newTopologyItem = new RemoteNodeTopologyItem_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&identity.get_identity(), "add_remoteTopItem","allocation_failure", SYS_ERR_HARD);
+		return(-1);
+	}
+
+	newTopologyItem->nodeInf = nodeInf;
+	newTopologyItem->refreshCount = 0;
+	newTopologyItem->timeToLive = extNodeTopInfo->timeToLive;
+	newTopologyItem->PDU_TTL = extNodeTopInfo->PDU_TTL;
+	newTopologyItem->remoteTopology.version = extNodeTopInfo->version;
+	newTopologyItem->remoteTopology.origNode = extNodeTopInfo->origNode;
+	newTopologyItem->remoteTopology.nodeTopology = extNodeTopInfo->origNodeTop;
+
+	lastTopItem->nextItem = newTopologyItem;
+	newTopologyItem->previousItem = lastTopItem;
+	newTopologyItem->nextItem = 0;
+	currentNumberNodeTopologies++;
+
+	return(0);
+};
+
+RemoteTopologyItem_s *RemoteNodeTopology::get_remoteTopItem(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, get_remoteTopItem\n");}
+	RemoteNodeTopologyItem_s *currentTopologyItem;
+	bool inList;
+
+	currentTopologyItem = firstTopologyItem;
+	inList = false;
+
+	while (currentTopologyItem != 0 && inList == false) {
+
+		if (globalNameSpace->check_ifEqual(currentTopologyItem->remoteTopology.origNode.nodeId.name, nodeId->name) == true) {
+			inList = true;
+		}
+		else {
+			currentTopologyItem = currentTopologyItem->nextItem;
+		};
+
+	};
+
+	if (currentTopologyItem != 0) {
+		return(&(currentTopologyItem->remoteTopology));
+	}
+	else {
+		return(0);
+	};
+
+};
+
+
+RemoteTopologyItem_s *RemoteNodeTopology::getNext_remoteTopItem(bool reset) {  // This function should run until it returns a zero pointer
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, getNext_remoteTopItem\n");}
+	RemoteNodeTopologyItem_s *currentTopologyItem;
+
+	if (nextTopologyItem == 0 || reset == true) {
+		nextTopologyItem = firstTopologyItem;
+		return(0);
+	}
+	else {
+		currentTopologyItem = nextTopologyItem;
+		nextTopologyItem = nextTopologyItem->nextItem;
+		return(&(currentTopologyItem->remoteTopology));
+	};
+
+};
+
+RemoteNodeTopologyItem_s *RemoteNodeTopology::getNext_remoteNodeTopItem() {  // This function should run until it returns a zero pointer
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, getNext_remoteNodeTopItem\n");}
+	RemoteNodeTopologyItem_s *currentTopologyItem;
+
+	if (nextTopologyItem == 0) {
+		nextTopologyItem = firstTopologyItem;
+		return(0);
+	}
+	else {
+		currentTopologyItem = nextTopologyItem;
+		nextTopologyItem = nextTopologyItem->nextItem;
+		return(currentTopologyItem);
+	};
+
+};
+
+int RemoteNodeTopology::get_currentNumberNodeTopologies() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, get_currentNumberNodeTopologies\n");}
+	return(currentNumberNodeTopologies);
+};
+
+int RemoteNodeTopology::get_currentVersion() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, get_currentVersion\n");}
+	return(this->firstTopologyItem->remoteTopology.version);
+};
+
+int RemoteNodeTopology::get_reissueCount() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, get_reissueCount\n");}
+	return(this->firstTopologyItem->reissueCount);
+};
+
+void RemoteNodeTopology::CALLBACK_tickZero(void *parameters, int secret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&identity.get_identity(), &this->nodeRef->get_identity());}
+	CALLBACK_checkTopologyInfo();
+
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(remoteTicks), CB_REMOTETOP, 0);
+};
+
+void RemoteNodeTopology::CALLBACK_checkTopologyInfo() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("RemoteNodeTopology, CALLBACK_checkTopologyInfo\n");}
+	RemoteNodeTopologyItem_s *topologyItem, *oldTopologyItem;
+
+	topologyItem = getNext_remoteNodeTopItem();  // This first item is always this node, thus should not be checked.
+	topologyItem = getNext_remoteNodeTopItem();
+
+	while (topologyItem != 0) {
+
+		if (topologyItem->timeToLive.tickPoint <= SYSTEM->getTicks().tickPoint) { // The item shall be removed
+			oldTopologyItem = topologyItem;
+
+			if (topologyItem == firstTopologyItem) {  // In current implementation, this can never happen as first node is this node
+				firstTopologyItem = topologyItem->nextItem;
+				topologyItem->nextItem->previousItem = 0;
+			}
+			else if (topologyItem->nextItem == 0) {  // last item 
+				topologyItem->previousItem->nextItem = 0;
+			}
+			else {
+				topologyItem->previousItem->nextItem = topologyItem->nextItem;
+				topologyItem->nextItem->previousItem = topologyItem->previousItem;
+			};
+
+			currentNumberNodeTopologies--;
+
+			if (nodeRef->get_identity().name.name == 765) {
+				cout << " currentNumberNodeTopologies-- " << SYSTEM->getTicks().tickPoint << "\n";
+			}
+
+		}
+		else {
+			oldTopologyItem = 0;
+		};
+
+		topologyItem = getNext_remoteNodeTopItem();
+
+		if (oldTopologyItem != 0) {
+			delete oldTopologyItem;
+		}
+
+	};  // ENDWHILE topologyItem
+
+};
+
+void RemoteNodeTopology::CALLBACK_checkTimeToLive() {  // This function is not in use
+};
+
+ostream &operator<<(ostream &stream, RemoteNodeTopology *rt) {
+	Identity *idp;
+	RemoteNodeTopologyItem_s *remTopItem;
+
+	idp = &rt->identity;
+	remTopItem = rt->firstTopologyItem;
+
+	stream << "RemoteNodeTopology_Status:\n" << idp << "\n";
+	stream << "Current number node topologies: " << rt->currentNumberNodeTopologies << "\n";
+
+	stream << "End_RemoteNodeTopology_Status\n";
+	return stream;
+};
+
+// CLASS SORTEDNODETOPOLOGY FUNCTIONS
+void SortedTopology::SortedTopology_init(Identity_s *id, Node *nodeRef, RemoteNodeTopology *remTopRef) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, init\n");}
+
+	SortedTierItem_s *tierItem;
+	RemoteTopologyItem_s *remTopItem;
+	int i, j, numberNodeInf, numberNeighbors;
+
+	identity.Identity_init(id);
+	localNodeRef = nodeRef;
+	remoteTopologyRef = remTopRef;
+
+	// Create the first tier which only and will only consist of this node
+
+	tierTopology[0].previousTier = tierTopology[0].nextTier = 0;
+	tierTopology[0].numberNodes = 1;
+
+	try {
+		tierItem = new SortedTierItem_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&identity.get_identity(), "SortedNodeTopology_init","allocation_failure", SYS_ERR_HARD);
+	}
+
+	tierItem->previousItem = tierItem->nextItem = 0;
+
+	remTopItem = remoteTopologyRef->getNext_remoteTopItem(false);  // Only needs to be called once as there is only this node's topology in the list
+	tierItem->origNode = remTopItem->origNode;
+	tierItem->remoteNodeTop = remTopItem;
+	tierItem->lastVersion = remTopItem->version;
+	tierItem->validated = true;
+	
+	if (remTopItem->nodeTopology.numberNodeInf > 0) {
+		// Set all neighbors for this node to be on an outer tier
+
+		numberNodeInf = remTopItem->nodeTopology.numberNodeInf;
+
+		for (i = 0; i < numberNodeInf; i++) {
+			numberNeighbors = remTopItem->nodeTopology.interfaces[i].numberNeighbors;
+
+			for (j = 0; j < numberNeighbors; j++) {
+				remTopItem->nodeTopology.interfaces[i].neighbors[j].tier = TIER_OUTER;
+			};
+
+		};
+
+	};
+
+	tierTopology[0].firstTierListItem = tierItem;
+
+	// Set number of nodes in all other tires to 0
+	for (i = 1; i < MAX_TIERS; i++) {
+		tierTopology[i].numberNodes = 0;
+		tierTopology[i].firstTierListItem = 0;
+	};
+
+	currentNumberTiers = currentNumberTierItems = 1;  // Can never be smaller
+
+	remTopItem = remoteTopologyRef->getNext_remoteTopItem(true);  // Read once more to reset getNext_RemoteTopItem()
+	
+	sortedTicks = SYSTEM->msToTick(SORTEDTOPOLOGY_INTERVAL);
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(sortedTicks), CB_SORTEDTOP, 0);
+};
+
+void SortedTopology::SortedTopology_delete() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, delete\n");}
+
+	SortedTierItem_s *sortedItem, *oldSortedItem;
+	int i;
+
+	for (i = 0; i < currentNumberTiers; i++) {
+		sortedItem = tierTopology[i].firstTierListItem;
+
+		while (sortedItem != 0) {
+			oldSortedItem = sortedItem;
+			sortedItem = sortedItem->nextItem;
+			delete oldSortedItem;
+		};
+
+	};
+
+	if (callbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(callbackRef);
+		callbackRef = -1;
+		cout << "SortedTop Callback\n";
+	}
+
+};
+
+
+void SortedTopology::CALLBACK_tickZero(void *parameters, int secret) {
+	if (SYS_threadTrace== true) { SYSTEM->threadTrace(&identity.get_identity(), &this->localNodeRef->get_identity());}
+	CALLBACK_update_tierTopology();
+
+	callbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->jitterbug(sortedTicks), CB_SORTEDTOP, 0);
+};
+
+int SortedTopology::CALLBACK_update_tierTopology() {  // NB!!! This routine needs checking, specifically what happens if I tier becomes emptied (see after first if statement)
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, CALLBACK_update_tierTopology\n");}
+	string input;
+	SortedTierItem_s *sortedTierItem, *oldTierItem;
+	TierItem_s tierItem;
+	RemoteTopologyItem_s *remTopItem;
+	bool isInnerTier, allInfDead;
+	int i, j, k, numberNodeInf, numberNeighbors, unsortedNodeTops, removedTiers;
+
+/*
+
+FOR tier 0 DO
+	IF this node's topology has changed THEN
+		update status, i.e. set all neighbors as belonging to TIER_OUTER
+	ENDIF
+ENDFOR
+
+Prune all nodes from the tiers that are no longer in RemoteNodeTopology
+
+FOR each tier n DO
+	FOR each node in RemoteNodeTopology DO
+		FOR each node in tier n DO
+			IF node's topology has changed THEN
+				IF node is still neigbor to a node in tier n-1 THEN  // MATCH between Sorted(tier n) and Remote
+					do nothing
+				ELSE IF node in RemoteNodeTopology has moved to this tier THEN  // MATCH between Sorted(tier NOT(n) -> tier n) and Remote
+					move the node to tier n
+				ELSE IF node in RemoteNodeTopology is a new node AND is neighbor to a node in tier n-1 THEN  // MATCH between Sorted(NEW, tier n) and Remote
+					insert new node in tier n
+				ENDIF
+			ELSE IF node has not changed topology THEN
+				IF node is still neighbor to a node in tier n-1 THEN  // MATCH between Sorted(tier n) and Remote
+				keep node in tier n
+			ENDIF
+			
+		ENDFOR
+
+	ENDOFOR
+
+ENDFOR
+
+FOR each node in each tier DO
+	set all listed neighbors being in tier n-1 as TIER_INNER
+	set	all listed neighbors being in same tier n as TIER_SAME
+	set all other listed neighbors as TIER_OUTER
+ENDFOR
+
+*/
+
+	remTopItem = remoteTopologyRef->getNext_remoteTopItem(false);  // This node's topology
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "remTopItem,_name", (int *) &remTopItem->origNode.nodeId.name.name, 0, 0, 0);}
+
+	if (tierTopology[0].firstTierListItem->lastVersion < remTopItem->version) {
+		tierTopology[0].firstTierListItem->lastVersion = remTopItem->version;
+	}
+
+	for (i = 1; i < currentNumberTiers; i++) {
+		sortedTierItem = tierTopology[i].firstTierListItem;
+
+		while (sortedTierItem != 0) {
+			if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "sortedTierItem-check", (int *) &sortedTierItem->origNode.nodeId.name.name, 0, 0, 0);}
+
+			if (remoteTopologyRef->get_remoteTopItem(&(sortedTierItem->origNode.nodeId)) == 0) {  // This node doesn't exist anymore in RemoteNodeTopology, shall thus be removed
+				oldTierItem = sortedTierItem;
+			}
+			else {
+				oldTierItem = 0;
+			};
+
+			sortedTierItem = sortedTierItem->nextItem;
+
+			if (oldTierItem != 0) {
+				tierItem.tier = i;
+				tierItem.tierItem = oldTierItem;
+				this->delete_tierItem(tierItem);
+			}
+
+		};
+
+	};
+
+	// Set all sorted tier items to non-validated
+	for (i = 1; i < currentNumberTiers; i++) {
+		sortedTierItem = tierTopology[i].firstTierListItem;
+
+		while (sortedTierItem != 0) { 
+			sortedTierItem->validated = false;
+			sortedTierItem = sortedTierItem->nextItem;
+		};
+
+	};
+
+	j = 0; // tier-1
+	currentNumberTiers = 1;
+	unsortedNodeTops = remoteTopologyRef->get_currentNumberNodeTopologies() - 1;
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "unsortedNodeTops", &unsortedNodeTops, 0, 0, 0);}
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "Node", 0, 0, 0, 0);}
+
+	for (i = 1; unsortedNodeTops > 0  && i < MAX_TIERS; i++) {
+		remTopItem = remoteTopologyRef->getNext_remoteTopItem(false);
+
+		while (remTopItem != 0) {
+			tierItem = check_tierLevel(remTopItem);
+			isInnerTier = check_innerTier(remTopItem, j);
+	
+			if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "  remTopItem: ", (int *) &remTopItem->origNode.nodeId.name.name, 0, 0, 0);}
+			if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "  tierItem.tier_&_innerTier: ", (int *) &tierItem.tier, 0, &isInnerTier, 0);}
+
+			if (tierItem.tier != 0) {  // Tier == 0 would indicate the node doesn't belong to any tier, i.e. a new node
+
+				if (tierItem.tierItem->validated == false) {
+					sortedTierItem = tierItem.tierItem;
+
+					if (sortedTierItem->lastVersion < remTopItem->version) {
+						sortedTierItem->lastVersion = remTopItem->version;
+					}
+
+					if (tierItem.tier != i && isInnerTier == true) {  // Node has moved from an outer/inner tier to this tier
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tierItem.tier_!=_i, isInnerTier == true", 0, 0, 0, 0);}
+						move_tierItem(tierItem.tier, sortedTierItem, i);
+						sortedTierItem->validated = true;
+						unsortedNodeTops--;
+					}
+					else if (tierItem.tier == i && isInnerTier == true) {
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tierItem.tier_==_i,_isInnerTier_==_true", 0, 0, 0, 0);}
+						sortedTierItem->validated = true;
+						unsortedNodeTops--;
+					}
+					else if (tierItem.tier == i && isInnerTier == false) {
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tierItem.tier_==_i,_isInnerTier_==_false", 0, 0, 0, 0);}
+						sortedTierItem->validated = false;
+					}
+					else {
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nothing", 0, 0, 0, 0);}
+					};
+
+				};  // ENDIF validated
+
+			}
+			else {  // This is a new node
+
+				if (isInnerTier == true) {
+					sortedTierItem = insert_newSortedItem(i, remTopItem);
+					sortedTierItem->validated = true;
+					unsortedNodeTops--;
+				};
+
+			};
+
+			remTopItem = remoteTopologyRef->getNext_remoteTopItem(false);
+		};  //ENDWHILE remTopItem
+
+		remTopItem = remoteTopologyRef->getNext_remoteTopItem(false);  // Will reset to first item, i.e. this node, which then should be skipped
+		j++;
+		currentNumberTiers++;  // Needs to be re-checked after validation
+	};  // ENDFOR tiers
+
+	// Check that all sorted tier items have been validated
+	removedTiers = 0;
+
+	for (i = 1; i < currentNumberTiers; i++) {
+		sortedTierItem = tierTopology[i].firstTierListItem;
+
+		while (sortedTierItem != 0) { 
+			oldTierItem = 0;
+
+			if (sortedTierItem->validated == false) {
+				allInfDead = true;
+				numberNodeInf = sortedTierItem->remoteNodeTop->nodeTopology.numberNodeInf;
+
+				for (j = 0; j < numberNodeInf; j++) {
+					numberNeighbors = sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].numberNeighbors;
+
+					for (k = 0; k < numberNeighbors; k++) {
+
+						if (sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier != TIER_UNCLEARNEIGHBOR) {
+							allInfDead = false;
+							SYSTEM->runtimerror(&identity.get_identity(), "update_tierTopology", "Non-validated_tier_item", SYS_ERR_SOFT);
+							return(-1);
+						}
+
+					};
+
+				};
+
+				if (allInfDead == true) {  // This remoteTopology and sortedTier item can be removed
+					oldTierItem = sortedTierItem;
+				}
+
+			};
+
+			sortedTierItem = sortedTierItem->nextItem;
+
+			if (oldTierItem != 0) {
+				tierItem.tier = i;
+				tierItem.tierItem = oldTierItem;
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "deletedRemTop", (int *) &oldTierItem->origNode.nodeId.name.name, 0, 0, 0);}
+				remoteTopologyRef->delete_remoteTopItem(&oldTierItem->origNode.nodeId);
+				this->delete_tierItem(tierItem);
+			}
+
+		};
+
+		if (tierTopology[i].numberNodes == 0) {
+			removedTiers++;
+		}
+
+	};
+
+	currentNumberTiers -= removedTiers;
+
+	remTopItem = remoteTopologyRef->getNext_remoteTopItem(true);   // Needs to be reset as for loop starts a final round before exit
+
+	for (i = 0; i < currentNumberTiers; i++) {
+
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tier: ", &i, 0, 0, 0);}
+		sortedTierItem = tierTopology[i].firstTierListItem;
+
+		while (sortedTierItem != 0) {		
+			if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "sortedTierItem: ", (int *) &sortedTierItem->origNode.nodeId.name.name, 0, 0, 0);}
+			numberNodeInf = sortedTierItem->remoteNodeTop->nodeTopology.numberNodeInf;
+
+			for (j = 0; j < numberNodeInf; j++) {
+				numberNeighbors = sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].numberNeighbors;
+
+				for (k = 0; k < numberNeighbors; k++) {
+					tierItem = find_tierItem(&(sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].nodeId));
+
+					if (tierItem.tierItem != 0) {
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tierItem_(node): ", (int *) &tierItem.tierItem->origNode.nodeId.name.name, 0, 0, 0);}
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "tierItem_(tier): ", &tierItem.tier, 0, 0, 0);}
+
+						if (tierItem.tier == i) {  // Neighbor in same tier
+							if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "SAME", 0, 0, 0, 0);}
+							sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier = TIER_SAME;
+						}
+						else if (tierItem.tier == (i-1)) {  // Neighbor in inner tier
+							if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "INNER", 0, 0, 0, 0);}
+							sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier = TIER_INNER;
+						}
+						else if (tierItem.tier == (i+1)) {  // Neighbor in outer tier
+							if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "OUTER", 0, 0, 0, 0);}
+							sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier = TIER_OUTER;
+						}
+						else {
+
+							if (sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier != TIER_UNCLEARNEIGHBOR) {
+								SYSTEM->runtimerror(&(identity.get_identity()), "update_tierTopology", "Neighbour_not_in_proper_tier", SYS_ERR_SOFT);
+								cout << "\nNeighbor not in proper tier: " << sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].nodeId.name.name << " Node reporting: " << tierTopology[0].firstTierListItem->origNode.nodeId.name.name << "\n";	
+								return(-1);
+							}
+
+						};
+
+					}
+					else {
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "UNKNOWN", 0, 0, 0, 0);}
+						sortedTierItem->remoteNodeTop->nodeTopology.interfaces[j].neighbors[k].tier = TIER_UNKNOWN; // We still miss a remTopItem for this neighbor
+					};
+
+				};  // ENDFOR numberNeighbors
+
+			};  // ENDFOR numberNodeInf
+
+			sortedTierItem = sortedTierItem->nextItem;
+		};  // ENWHILE sortedTierItem
+
+	};  // ENDFOR tier
+
+	this->calculate_routes();
+
+//	if (identity.get_identity().name.name == 11146 && SYSTEM->getTicks().tickPoint == 25832) {
+//		SYSTEM->breakExecution(SYSTEM->getTicks());
+//	};
+
+	return(0);
+};
+
+void SortedTopology::CALLBACK_checkTimeToLive() {  // This function is not in use
+};
+
+int SortedTopology::delete_tierItem(TierItem_s tierItem) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, delete_tierItem\n");}
+	SortedTierItem_s *oldTierItem;
+
+	oldTierItem = tierItem.tierItem;
+
+	if (oldTierItem == tierTopology[tierItem.tier].firstTierListItem) {
+
+		if (oldTierItem->nextItem != 0) {
+			tierTopology[tierItem.tier].firstTierListItem = oldTierItem->nextItem;
+			oldTierItem->nextItem->previousItem = 0;
+		}
+		else {
+			tierTopology[tierItem.tier].firstTierListItem = 0;
+		};
+	}
+	else if (oldTierItem->nextItem == 0) {  // last item
+		oldTierItem->previousItem->nextItem = 0;
+	}
+	else {
+		oldTierItem->nextItem->previousItem = oldTierItem->previousItem;
+		oldTierItem->previousItem->nextItem = oldTierItem->nextItem;
+	};
+
+	tierTopology[tierItem.tier].numberNodes--;
+	currentNumberTierItems--;
+	delete oldTierItem;
+	return(0);
+};
+
+TierItem_s SortedTopology::check_tierLevel(RemoteTopologyItem_s *remoteTopItem) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, check_tierLevel\n");}
+
+	int currentTier;
+	bool inSortedTopology;
+	SortedTierItem_s *sortedTierItem, *foundTierItem;
+	TierItem_s tierItem;
+
+	inSortedTopology = false;
+
+	for (currentTier = 1; currentTier < MAX_TIERS && inSortedTopology == false; currentTier++) {
+		sortedTierItem = tierTopology[currentTier].firstTierListItem;
+
+		while (sortedTierItem != 0 && inSortedTopology == false) {
+
+			if (globalNameSpace->check_ifEqual(sortedTierItem->remoteNodeTop->origNode.nodeId.name, remoteTopItem->origNode.nodeId.name) == true) {
+				inSortedTopology = true;
+				foundTierItem = sortedTierItem;
+			};
+
+			sortedTierItem = sortedTierItem->nextItem;
+
+		};
+
+	};
+
+	if (inSortedTopology == true) {
+		tierItem.tier = currentTier-1;
+		tierItem.tierItem = foundTierItem;
+	}
+	else {
+		tierItem.tier = 0;
+		tierItem.tierItem = 0;
+	};
+
+	return(tierItem);
+};
+
+TierNodeItem_s SortedTopology::find_tierNodeItem(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, find_tierNodeItem\n");}
+
+	int currentTier;
+	bool inSortedTopology;
+	SortedTierItem_s *sortedTierItem, *foundTierItem;
+	TierNodeItem_s tierNodeItem;
+
+	inSortedTopology = false;
+
+	for (currentTier = 0; currentTier < currentNumberTiers && inSortedTopology == false; currentTier++) {
+		sortedTierItem = tierTopology[currentTier].firstTierListItem;
+
+		while (sortedTierItem != 0 && inSortedTopology == false) {
+
+			if (globalNameSpace->check_ifEqual(sortedTierItem->remoteNodeTop->origNode.nodeId.name, nodeId->name) == true) {
+				inSortedTopology = true;
+				foundTierItem = sortedTierItem;
+			};
+
+			sortedTierItem = sortedTierItem->nextItem;
+
+		};
+
+	};
+
+	if (inSortedTopology == true) {
+		tierNodeItem.tier = currentTier-1;
+		tierNodeItem.remoteNodeTop = foundTierItem->remoteNodeTop;
+	}
+	else {
+		tierNodeItem.tier = -1;
+		tierNodeItem.remoteNodeTop = 0;
+	};
+
+	return(tierNodeItem);
+};
+
+TierItem_s SortedTopology::find_tierItem(Identity_s *nodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, find_tierItem\n");}
+
+	int currentTier;
+	bool inSortedTopology;
+	SortedTierItem_s *sortedTierItem, *foundTierItem;
+	TierItem_s tierItem;
+
+	inSortedTopology = false;
+	currentTier = 0;
+
+	for (currentTier = 0; currentTier < currentNumberTiers && inSortedTopology == false; currentTier++) {
+		sortedTierItem = tierTopology[currentTier].firstTierListItem;
+
+		while (sortedTierItem != 0 && inSortedTopology == false) {
+
+			if (globalNameSpace->check_ifEqual(sortedTierItem->remoteNodeTop->origNode.nodeId.name, nodeId->name) == true) {
+				inSortedTopology = true;
+				foundTierItem = sortedTierItem;
+			};
+
+			sortedTierItem = sortedTierItem->nextItem;
+
+		};
+
+	};
+
+	if (inSortedTopology == true) {
+		tierItem.tier = currentTier-1;
+		tierItem.tierItem = foundTierItem;
+	}
+	else {
+		tierItem.tier = 0;
+		tierItem.tierItem = 0;
+	};
+
+	return(tierItem);
+};
+
+
+bool SortedTopology::check_innerTier(RemoteTopologyItem_s *remoteTopItem, int innerTier) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, check_innerTier\n");}
+
+	int i, j, k, l, numberNodeInf, numberNeighbors, tierItemNumberNodeInf, tierItemNumberNeighbors;
+	bool inInnerTier, infFound;
+	SortedTierItem_s *tierItem;
+	Identity_s tierItemInfId;
+
+	inInnerTier = false;
+
+	tierItem = tierTopology[innerTier].firstTierListItem;
+
+	if (tierItem != 0) {
+
+		while (tierItem != 0 && inInnerTier == false) {
+			numberNodeInf = remoteTopItem->nodeTopology.numberNodeInf;
+
+			for (i = 0; i < numberNodeInf && inInnerTier == false; i++) {
+				numberNeighbors = remoteTopItem->nodeTopology.interfaces[i].numberNeighbors;
+
+				for (j = 0; j < numberNeighbors && inInnerTier == false; j++) {
+	
+					if (globalNameSpace->check_ifEqual(remoteTopItem->nodeTopology.interfaces[i].neighbors[j].nodeId.name, tierItem->remoteNodeTop->origNode.nodeId.name) == true && tierItem->validated == true) {
+						// Check that a mutual neighbor relationship can be verified, if not, put outer neighbor on hold (NB!!! works only in case of bi-directional links)
+						infFound = false;
+						tierItemInfId = remoteTopItem->nodeTopology.interfaces[i].neighbors[j].interfaceId;
+						tierItemNumberNodeInf = tierItem->remoteNodeTop->nodeTopology.numberNodeInf;
+
+						for (k = 0; k <  tierItemNumberNodeInf && infFound == false; k++) {
+						
+							if (globalNameSpace->check_ifEqual(tierItemInfId.name, tierItem->remoteNodeTop->nodeTopology.interfaces[k].localInterfaceId.name) == true) {
+								infFound = true;
+							}
+
+						};
+
+						if (infFound == true) {  // Check that the tierItem is listing remoteTopItem as one of its neighbors
+							k--;  // The relevant interface index number
+							tierItemNumberNeighbors = tierItem->remoteNodeTop->nodeTopology.interfaces[k].numberNeighbors;
+
+							for (l = 0; l < tierItemNumberNeighbors && inInnerTier == false; l++) {
+
+								if (globalNameSpace->check_ifEqual(tierItem->remoteNodeTop->nodeTopology.interfaces[k].neighbors[l].nodeId.name, remoteTopItem->origNode.nodeId.name) == true) {
+									inInnerTier = true;
+								}
+
+							};
+
+							if (inInnerTier == false) {
+								remoteTopItem->nodeTopology.interfaces[i].neighbors[j].tier = TIER_UNCLEARNEIGHBOR;
+							}
+
+
+						}
+						else {
+							SYSTEM->runtimerror(&identity.get_identity(), "check_innerTier", "non-existing_interface_id", SYS_ERR_SOFT);
+						};  // ENDIF infFound
+
+					};  // ENDIF checkIfEqual (remoteTopItem (neighbor), tierItem)
+
+				};  // ENDFOR numberNeighbord (remoteTopItem)
+
+			};  // ENDFOR numberNodeInf (remoteTopItem)
+
+			tierItem = tierItem->nextItem;
+		};  // ENDWHILE tierItem && inInnerTier
+
+	}
+	else {  // The innerTier is empty, set all tier relations for this remoteTopItem to UNCLEAR
+		numberNodeInf = remoteTopItem->nodeTopology.numberNodeInf;
+
+		for (i = 0; i < numberNodeInf; i++) {
+				numberNeighbors = remoteTopItem->nodeTopology.interfaces[i].numberNeighbors;
+
+				for (j = 0; j < numberNeighbors; j++) {
+					remoteTopItem->nodeTopology.interfaces[i].neighbors[j].tier = TIER_UNCLEARNEIGHBOR;
+				}
+
+		}
+
+	};  // ENDIF tierItem != 0
+
+	return(inInnerTier);
+};
+
+int SortedTopology::move_tierItem(int currentTier, SortedTierItem_s *tierItem, int newTier) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, move_tierItem\n");}
+
+	SortedTierItem_s *tierItem_newTier;
+
+	if (newTier >= MAX_TIERS || currentTier >= MAX_TIERS) {
+		SYSTEM->runtimerror(&(identity.get_identity()), "move_tierItem", "Tier_out_of_range", SYS_ERR_HARD);
+		return(-1);
+	}
+
+	if (tierTopology[currentTier].numberNodes == 1) {  // This the last item in this tier.
+		tierTopology[currentTier].firstTierListItem = 0;
+		tierTopology[currentTier].numberNodes = 0;
+	}
+	else {
+
+		if (tierItem == tierTopology[currentTier].firstTierListItem) { // The one to be moved is the first item
+
+			if (tierItem->nextItem != 0) {
+				tierItem->nextItem->previousItem = 0;
+				tierTopology[currentTier].firstTierListItem = tierItem->nextItem;
+			}
+			else {  // Last item in this tier
+				tierTopology[currentTier].firstTierListItem = 0;
+			};
+
+		}
+		else if (tierItem->nextItem == 0) {  // The one to be moved is the last item
+			tierItem->previousItem->nextItem = 0;
+		}
+		else {
+			tierItem->previousItem->nextItem = tierItem->nextItem;
+			tierItem->nextItem->previousItem = tierItem->previousItem;
+		};
+
+		tierTopology[currentTier].numberNodes--;
+	};
+
+	if (tierTopology[newTier].numberNodes == 0) {
+		tierTopology[newTier].firstTierListItem = tierItem;
+		tierItem->previousItem = tierItem->nextItem = 0;
+	}
+	else {
+		// Find last item
+		tierItem_newTier = tierTopology[newTier].firstTierListItem;
+
+		while (tierItem_newTier->nextItem != 0) {
+			tierItem_newTier = tierItem_newTier->nextItem;
+		}
+
+		tierItem_newTier->nextItem = tierItem;
+		tierItem->previousItem = tierItem_newTier;
+		tierItem->nextItem = 0;
+	};
+
+	tierTopology[newTier].numberNodes++;
+
+	return(0);
+};
+
+SortedTierItem_s *SortedTopology::insert_newSortedItem(int tier, RemoteTopologyItem_s *remoteTopItem) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, insert_newSortedItem\n");}
+
+	SortedTierItem_s *tierItem, *newTierItem;
+
+	if (tier >= MAX_TIERS) {
+		SYSTEM->runtimerror(&(identity.get_identity()), "insert_newSortedItem", "Tier_out_of_range", SYS_ERR_HARD);
+		return(0);
+	}
+
+	try {
+		newTierItem = new SortedTierItem_s;
+	} catch (bad_alloc xa) {
+		SYSTEM->runtimerror(&identity.get_identity(), "insert_newSortedItem","allocation_failure", SYS_ERR_HARD);
+		return(0);
+	}
+
+	if (tierTopology[tier].numberNodes == 0) {  // To be inserted into a new or empty tier
+		tierTopology[tier].firstTierListItem = newTierItem;
+		newTierItem->previousItem = newTierItem->nextItem = 0;
+	}
+	else {
+		// Find last item
+		tierItem = tierTopology[tier].firstTierListItem;
+
+		while (tierItem->nextItem != 0) {
+			tierItem = tierItem->nextItem;
+		}
+
+		tierItem->nextItem = newTierItem;
+		newTierItem->previousItem = tierItem;
+		newTierItem->nextItem = 0;
+	};
+
+	newTierItem->numberRoutes = 0;
+	newTierItem->lastVersion = remoteTopItem->version;
+	newTierItem->origNode = remoteTopItem->origNode;
+	newTierItem->remoteNodeTop = remoteTopItem;
+
+	tierTopology[tier].numberNodes++;
+	currentNumberTierItems++;
+
+	return(newTierItem);
+};
+
+TierNeighborRef_s SortedTopology::find_nextOuterNeighbor(RemoteTopologyItem_s *remTopItem, int prevInfNumber, int prevNeighborNumber) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, find_nextOuterNeighbor\n");}
+
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "remTopItem", (int *) &remTopItem->origNode.nodeId.name.name, 0, 0, 0);}
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "prevInfNumber", &prevInfNumber, 0, 0, 0);}
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "prevNeighborNumber", &prevNeighborNumber, 0, 0, 0);}
+
+	TierNeighborRef_s nextNeighbor;
+	RemoteTopologyItem_s *nextRemTopItem;
+	int nextInfOutNumber, nextInfInNumber, nextNeighborNumber;
+	bool infExhausted, neighborFound, infFound;
+
+	if (prevInfNumber == -1) {
+		nextInfOutNumber = 0;
+	}
+	else {
+		nextInfOutNumber = prevInfNumber;
+	};
+
+	if (prevNeighborNumber == -1) {
+		nextNeighborNumber = 0;
+	}
+	else {
+		nextNeighborNumber = ++prevNeighborNumber;
+	};
+
+	if (remTopItem->nodeTopology.interfaces[nextInfOutNumber].numberNeighbors == nextNeighborNumber) {
+		nextInfOutNumber++;
+		nextNeighborNumber = 0;
+	}
+
+	nextNeighbor.thisInfOutNumber = -1;
+	nextNeighbor.nextInfInNumber = -1;
+	nextNeighbor.neighborNumber = -1;
+
+	if (nextInfOutNumber < remTopItem->nodeTopology.numberNodeInf) {
+		infExhausted = false;
+		neighborFound = false;
+
+		while (neighborFound == false && infExhausted == false) {
+
+			if (remTopItem->nodeTopology.interfaces[nextInfOutNumber].neighbors[nextNeighborNumber].tier == TIER_OUTER) {  // This leads to a neighbor in an outer tier
+
+				if (remTopItem->nodeTopology.interfaces[nextInfOutNumber].localDomainLevel == remTopItem->origNode.nodeTraits.domainLevel) {  // This is an intra-domain interface. NB!!! Will only work as long as all neighbors are in another domain.
+					nextRemTopItem = remoteTopologyRef->get_remoteTopItem(&remTopItem->nodeTopology.interfaces[nextInfOutNumber].neighbors[nextNeighborNumber].nodeId);
+
+					if (nextRemTopItem == 0) {
+						cout << " Tickpoint: " << SYSTEM->getTicks().tickPoint << " Node id: " << this->localNodeRef->get_identity().name.name << "\n";
+						SYSTEM->breakExecution(SYSTEM->getTicks());
+					}
+
+					// Find the interface number
+					infFound = false;
+					nextInfInNumber = 0;
+
+					while (infFound == false) {
+
+						if (globalNameSpace->check_ifEqual(remTopItem->nodeTopology.interfaces[nextInfOutNumber].neighbors[nextNeighborNumber].interfaceId.name, nextRemTopItem->nodeTopology.interfaces[nextInfInNumber].localInterfaceId.name) == true) {
+							if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "infFound_=_true", 0, 0, 0, 0);}
+							infFound = true;
+						}
+						else {
+							nextInfInNumber++;
+							if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextInfNumber+", 0, 0, 0, 0);}
+
+							if (nextInfInNumber >= nextRemTopItem->nodeTopology.numberNodeInf) {
+								cout << "\nremTopItem: " << remTopItem->origNode.nodeId.nickName << " nextRemTopItem: " << nextRemTopItem->origNode.nodeId.nickName << "\n";
+								SYSTEM->runtimerror(&identity.get_identity(), "find_nextOuterNeighbor", "No_matching_interfaceId_for_next_neighbor", SYS_ERR_SOFT);
+								return(nextNeighbor);
+							}
+
+						};
+
+					};
+
+					nextNeighbor.thisInfOutNumber = nextInfOutNumber;
+					nextNeighbor.nextInfInNumber = nextInfInNumber;
+					nextNeighbor.neighborNumber = nextNeighborNumber;
+					neighborFound = true;
+				}
+				else {
+					nextNeighborNumber++;
+
+					if (nextNeighborNumber == remTopItem->nodeTopology.interfaces[nextInfOutNumber].numberNeighbors || remTopItem->nodeTopology.interfaces[nextInfOutNumber].numberNeighbors == 0) {  // The latter might be the case when a node's neighbor has gone silent
+						nextInfOutNumber++;
+						nextNeighborNumber = 0;
+
+						if (nextInfOutNumber == remTopItem->nodeTopology.numberNodeInf) {
+							infExhausted = true;
+						}
+
+					};
+
+				};  // ENDIF domainLevel
+
+			}
+			else {
+				nextNeighborNumber++;
+
+				if (nextNeighborNumber == remTopItem->nodeTopology.interfaces[nextInfOutNumber].numberNeighbors || remTopItem->nodeTopology.interfaces[nextInfOutNumber].numberNeighbors == 0) {  // The latter might be the case when a node's neighbor has gone silent
+					nextInfOutNumber++;
+					nextNeighborNumber = 0;
+
+					if (nextInfOutNumber == remTopItem->nodeTopology.numberNodeInf) {
+						infExhausted = true;
+					}
+
+				};
+
+			};  // ENDIF tier
+
+		};  // ENDWHILE neighborFound, infExhausted
+
+	};  // ENDIF nextInfOutNumber
+
+	return(nextNeighbor);
+};
+
+int SortedTopology::get_currentNumberTierItems() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, get_currentNumberTierItems\n");}
+	return(currentNumberTierItems);
+};
+
+RouteSegment_s SortedTopology::get_firstRouteSegment(Identity_s *destNodeId) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, get_firstRouteSegment\n");}
+	RouteSegment_s routeSegment;
+	TierItem_s tierItem;
+	int i, lowestScoreIndex;
+	float lowestScore;
+	bool routeFound;
+
+	tierItem = this->find_tierItem(destNodeId);
+	routeFound = false;
+
+	if (tierItem.tierItem != 0) {  // Destination is found
+
+		if (tierItem.tierItem->numberRoutes > 0) {  // There is a route, find the one with the lowest score
+			routeFound = true;
+			lowestScore = MAX_ROUTESCORE;
+
+			for (i = 0; i < tierItem.tierItem->numberRoutes; i++) {
+
+				if (tierItem.tierItem->routes[i].routeScore < lowestScore) {
+					lowestScoreIndex = i;
+					lowestScore = tierItem.tierItem->routes[i].routeScore;
+				}
+
+			}
+
+		}
+
+	}
+
+	if (routeFound == true) {
+		return(tierItem.tierItem->routes[lowestScoreIndex].routeSegment[0]);
+	}
+	else {
+		routeSegment.entryNodeInfId = routeSegment.exitNodeInfId = routeSegment.nodeId = identity.reset_anotherIdentity();
+		routeSegment.previousSegment = routeSegment.nextSegment = 0;
+		return(routeSegment);
+	};
+
+};
+
+int SortedTopology::calculate_routes() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, calculate_routes\n");}
+	float routeScoreInit, routeScoreCount;
+	Route_s route, routeTier1Neighbor;
+	RemoteTopologyItem_s *remTopItems[MAX_TIERS];
+	TierNeighborRef_s nextNeighbor[MAX_TIERS];
+	bool routeStop, neighborInitialized[MAX_TIERS];  // This latter probably not needed!!!
+	int hopCount, i;
+
+/*  ROUTING TABLE ALGORITH, TO BE FINILIZED
+FOR each interface DO
+	FOR each neighbor DO
+		add up routesegment
+
+		initialize with next hop Neighbor
+
+		IF a next hop Neighbor THEN
+			set routes to not being exhausted
+		ENDIF
+
+		WHILE NOT all routes have been exhausted DO
+			add up routesegment
+*/
+	this->flush_allRoutes();
+
+	remTopItems[0] = remoteTopologyRef->get_remoteTopItem(&tierTopology[0].firstTierListItem->remoteNodeTop->origNode.nodeId);  // Need to check if this is the right nodeID???
+	nextNeighbor[0] = this->find_nextOuterNeighbor(remTopItems[0], -1, -1);
+	neighborInitialized[0] = true;
+
+	while (nextNeighbor[0].nextInfInNumber != -1) {
+
+		for (i = 1; i < MAX_TIERS; i++) {
+			neighborInitialized[i] = false;
+		};
+
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "remTopItem0", (int *) &remTopItems[0]->origNode.nodeId.name.name, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN0,_neighborNumber", &nextNeighbor[0].neighborNumber, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN0,_nextInfInNumber", &nextNeighbor[0].nextInfInNumber, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN0,_thisInfOutNumber", &nextNeighbor[0].thisInfOutNumber, 0, 0, 0);}
+
+		route.routeSegment[0].entryNodeInfId = identity.reset_anotherIdentity();
+		route.routeSegment[0].nodeId = tierTopology[0].firstTierListItem->origNode.nodeId;
+		route.routeSegment[0].exitNodeInfId = tierTopology[0].firstTierListItem->remoteNodeTop->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].localInterfaceId;
+
+		routeScoreInit = tierTopology[0].firstTierListItem->remoteNodeTop->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].intLinkTraits.transmission.bandwidth;
+		routeScoreInit += tierTopology[0].firstTierListItem->remoteNodeTop->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].extLinkTraits.transmission.bandwidth;
+		route.routeScore = routeScoreInit;
+		routeScoreCount = 2;
+
+		routeTier1Neighbor.destNodeId = remTopItems[0]->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].neighbors[nextNeighbor[0].neighborNumber].nodeId;
+		routeTier1Neighbor.routeScore = routeScoreInit/2;
+		routeTier1Neighbor.routeSegment[0] = route.routeSegment[0];
+		routeTier1Neighbor.routeSegment[1].entryNodeInfId = remTopItems[0]->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].neighbors[nextNeighbor[0].neighborNumber].interfaceId;
+		routeTier1Neighbor.routeSegment[1].exitNodeInfId = identity.reset_anotherIdentity();
+		add_route(&routeTier1Neighbor);
+
+		routeStop = false;
+		hopCount = 1;
+
+		remTopItems[hopCount] = remoteTopologyRef->get_remoteTopItem(&tierTopology[0].firstTierListItem->remoteNodeTop->nodeTopology.interfaces[nextNeighbor[0].thisInfOutNumber].neighbors[nextNeighbor[0].neighborNumber].nodeId);
+
+		nextNeighbor[hopCount] = this->find_nextOuterNeighbor(remTopItems[hopCount], -1, -1);
+		neighborInitialized[hopCount] = true;
+
+		while (routeStop == false && nextNeighbor[1].nextInfInNumber != -1) {
+
+			if (nextNeighbor[hopCount].nextInfInNumber != -1) {  // There is another next neighbor to add to the route, should it be nextInfInNumber???
+				route.routeSegment[hopCount].entryNodeInfId = remTopItems[hopCount-1]->nodeTopology.interfaces[nextNeighbor[hopCount-1].thisInfOutNumber].neighbors[nextNeighbor[hopCount-1].neighborNumber].interfaceId;
+				route.routeSegment[hopCount].nodeId = remTopItems[hopCount]->origNode.nodeId;
+				route.routeSegment[hopCount].exitNodeInfId = remTopItems[hopCount]->nodeTopology.interfaces[nextNeighbor[hopCount].thisInfOutNumber].localInterfaceId;
+				route.routeScore += remTopItems[hopCount-1]->nodeTopology.interfaces[nextNeighbor[hopCount-1].nextInfInNumber].intLinkTraits.transmission.bandwidth;
+				route.routeScore += remTopItems[hopCount]->nodeTopology.interfaces[nextNeighbor[hopCount].thisInfOutNumber].extLinkTraits.transmission.bandwidth;
+				route.routeScore += remTopItems[hopCount]->nodeTopology.interfaces[nextNeighbor[hopCount].thisInfOutNumber].intLinkTraits.transmission.bandwidth;
+				routeScoreCount += 3;
+				hopCount++;
+
+				remTopItems[hopCount] = remoteTopologyRef->get_remoteTopItem(&remTopItems[hopCount-1]->nodeTopology.interfaces[nextNeighbor[hopCount-1].thisInfOutNumber].neighbors[nextNeighbor[hopCount-1].neighborNumber].nodeId);
+					
+				if (neighborInitialized[hopCount] == false) {  // This test is probably not necessary!!!
+					nextNeighbor[hopCount] = this->find_nextOuterNeighbor(remTopItems[hopCount], -1, -1);  // Should it be hopCount or hopCount-1 in function call (if hopCount, then remTopItems[hopCount] needs t o be init.)???
+					neighborInitialized[hopCount] = true;
+				}
+				else {
+					nextNeighbor[hopCount] = this->find_nextOuterNeighbor(remTopItems[hopCount], nextNeighbor[hopCount].thisInfOutNumber, nextNeighbor[hopCount].neighborNumber);
+				}
+
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "hopCount", &hopCount, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "remTopItem", (int *) &remTopItems[hopCount-1]->origNode.nodeId.name.name, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN,_neighborNumber", &nextNeighbor[hopCount].neighborNumber, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN,_nextInfInNumber", &nextNeighbor[hopCount].nextInfInNumber, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN,_thisInfOutNumber", &nextNeighbor[hopCount].thisInfOutNumber, 0, 0, 0);}
+
+			}
+			else {
+				// Route stop
+				// Terminate route!!!
+				route.routeScore += remTopItems[hopCount-1]->nodeTopology.interfaces[nextNeighbor[hopCount-1].nextInfInNumber].intLinkTraits.transmission.bandwidth;
+				routeScoreCount++;
+				route.routeScore = route.routeScore/routeScoreCount;  // So just a simple mean value is used at the moment
+
+				route.routeSegment[hopCount].entryNodeInfId = remTopItems[hopCount-1]->nodeTopology.interfaces[nextNeighbor[hopCount-1].nextInfInNumber].neighbors[nextNeighbor[hopCount-1].neighborNumber].interfaceId;
+				route.routeSegment[hopCount].exitNodeInfId = identity.reset_anotherIdentity();
+				route.destNodeId = remTopItems[hopCount]->origNode.nodeId;
+				this->add_route(&route);
+
+				neighborInitialized[hopCount] = false;
+
+				if (hopCount > 1) {
+					nextNeighbor[hopCount-1] = this->find_nextOuterNeighbor(remTopItems[hopCount-1], nextNeighbor[hopCount-1].thisInfOutNumber, nextNeighbor[hopCount-1].neighborNumber);
+				}
+
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "hopCount", &hopCount, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "remTopItem", (int *) &remTopItems[hopCount-1]->origNode.nodeId.name.name, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN(hopCount-1),_neighborNumber", &nextNeighbor[hopCount-1].neighborNumber, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN(hopCount-1),_nextInfInNumber", &nextNeighbor[hopCount-1].nextInfInNumber, 0, 0, 0);}
+				if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "nextN(hopCount-1),_thisInfOutNumber", &nextNeighbor[hopCount-1].thisInfOutNumber, 0, 0, 0);}
+
+				if (hopCount == 2) {
+					
+					if (nextNeighbor[1].nextInfInNumber == -1) {  // There are no more routes for this tier 1 neighbor
+						if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "routeStop", 0, 0, 0, 0);}
+						routeStop = true;
+					}
+					else {
+						hopCount--;
+					};
+
+				}
+				else {
+					hopCount--;
+				};
+
+
+			};
+
+		}; // ENDWHILE routeStop
+		
+		nextNeighbor[0] = this->find_nextOuterNeighbor(remTopItems[0], nextNeighbor[0].thisInfOutNumber, nextNeighbor[0].neighborNumber);
+	};  // ENDWHILE nextNeighbor[0]
+
+	return(0);
+};
+
+int SortedTopology::add_route(Route_s *route) {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, add_route\n");}
+
+	TierItem_s tierItem;
+	float lowestScore;
+	int i, lowestScoreIndex;
+
+	tierItem = this->find_tierItem(&route->destNodeId);
+
+	RouteSegment_s *segment;
+
+	segment = &route->routeSegment[0];
+	i = 0;
+	if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "destNode,_route: ", (int *) &route->destNodeId.name.name, 0, 0, 0);}
+
+	while (globalNameSpace->check_ifValid(segment->exitNodeInfId.name) == true) {
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "  Segment", &i, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "    Node: ", (int *) &segment->nodeId.name.name, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "    EntryNodeInf: ", (int *) &segment->entryNodeInfId.name.name, 0, 0, 0);}
+		if (SYS_eventTrace == true) { SYSTEM->eventTrace(&identity.get_identity(), &localNodeRef->get_identity(), SYS_LL_LOW, "    ExitNodeInf: ", (int *) &segment->exitNodeInfId.name.name, 0, 0, 0);}
+		i++;
+		segment = &route->routeSegment[i];
+	};
+
+	if (tierItem.tierItem->numberRoutes < MAX_ROUTES) {
+		tierItem.tierItem->routes[tierItem.tierItem->numberRoutes] = *route;
+		tierItem.tierItem->numberRoutes++;
+	}
+	else {
+		// Replace a stored route with the new route if the new has a better route score, first find the one with the lowest
+		lowestScore = MAX_ROUTESCORE;
+
+		for (i = 0; i < MAX_ROUTES; i++) {
+
+			if (tierItem.tierItem->routes[i].routeScore < lowestScore) {
+				lowestScoreIndex = i;
+				lowestScore = tierItem.tierItem->routes[i].routeScore;
+			}
+
+		}
+
+		if (tierItem.tierItem->routes[lowestScoreIndex].routeScore < route->routeScore) {
+			tierItem.tierItem->routes[lowestScoreIndex] = *route;
+		}
+
+	};
+
+	return(0);
+};
+
+void SortedTopology::flush_allRoutes() {
+	if (SYS_funcTrace== true) { SYSTEM->funcTrace("SortedTopology, flush_allRoutes\n");}
+
+	SortedTierItem_s *tierItem;
+	int i;
+
+	for (i = 0; i < currentNumberTiers; i++) {
+		tierItem = tierTopology[i].firstTierListItem;
+
+		while (tierItem != 0) {
+			tierItem->numberRoutes = 0;
+			tierItem = tierItem->nextItem;
+		};
+
+	};
+
+};
+
+ostream &operator<<(ostream &stream, SortedTopology *st) {
+	Identity *idp;
+	Identity_s id;
+	RouteSegment_s *segment;
+	SortedTierItem_s *sortedTierItem;
+	NodeTopology_s *nodeTopology;
+	int i, j, k, numberNodeInf, numberNeighbors;
+	string extName;
+
+	idp = &st->identity;
+	stream << "SortedTopology_Status:\n" << idp << "\n";
+	stream << "Current number tiers: " << st->currentNumberTiers << " Current number nodes in all tiers: " << st->currentNumberTierItems << "\n";
+
+	for (i = 1; i < st->currentNumberTiers; i++) {
+		sortedTierItem = st->tierTopology[i].firstTierListItem;
+		stream << "  Tier " << i << ":";
+		stream << " Nodes ";
+
+		while (sortedTierItem != 0) {
+			stream << sortedTierItem->origNode.nodeId.nickName << " / " << sortedTierItem->origNode.nodeId.name.name;
+			sortedTierItem = sortedTierItem->nextItem;
+
+			if (sortedTierItem != 0) {
+				stream << ", ";
+			}
+
+		}
+
+		stream << "\n";
+	};
+
+	if (SYSTEM->get_logLevel() == SYS_LL_ALL) {
+		// Print the node topologies for each node in the tiered topology
+		stream << "Node topologies for each node in the tiered topology:\n";
+
+		for (i = 0; i < st->currentNumberTiers; i++) {
+			sortedTierItem = st->tierTopology[i].firstTierListItem;
+
+			while (sortedTierItem != 0) {
+				stream << "Node: " << sortedTierItem->origNode.nodeId.type << sortedTierItem->origNode.nodeId.nickName << " / " << sortedTierItem->origNode.nodeId.name.name << "\n";
+
+				numberNodeInf = sortedTierItem->remoteNodeTop->nodeTopology.numberNodeInf;
+				nodeTopology = &sortedTierItem->remoteNodeTop->nodeTopology;
+
+				for (j = 0; j < numberNodeInf; j++) {
+					stream << "  Local Node interface: ";
+					stream << nodeTopology->interfaces[j].localInterfaceId.type << " / " << nodeTopology->interfaces[j].localInterfaceId.nickName << " / " << nodeTopology->interfaces[j].localInterfaceId.name.name << "\n";
+					stream << "    Link: " << nodeTopology->interfaces[j].linkId.type << " / " << nodeTopology->interfaces[j].linkId.nickName << " / " << nodeTopology->interfaces[j].linkId.name.name << "\n";
+					stream << "    Linkbuilder: " << nodeTopology->interfaces[j].linkBuilder << "\n";
+					stream << "    Local DomainLevel: " << nodeTopology->interfaces[j].localDomainLevel << "\n";
+					stream << "    Local SuperNode: " << nodeTopology->interfaces[j].localSuperNodeId.type << " / " << nodeTopology->interfaces[j].localSuperNodeId.nickName << " / " << nodeTopology->interfaces[j].localSuperNodeId.name.name << "\n";
+					stream << "    Neighbors:\n";
+
+					numberNeighbors = nodeTopology->interfaces[j].numberNeighbors;
+
+					for (k = 0; k < numberNeighbors; k++) {
+						stream << "      Node: " << nodeTopology->interfaces[j].neighbors[k].nodeId.type << " / " << nodeTopology->interfaces[j].neighbors[k].nodeId.nickName << " / " << nodeTopology->interfaces[j].neighbors[k].nodeId.name.name << "\n";
+						stream << "      Interface: " << nodeTopology->interfaces[j].neighbors[k].interfaceId.type << " / " << nodeTopology->interfaces[j].neighbors[k].interfaceId.nickName << " / " << nodeTopology->interfaces[j].neighbors[k].interfaceId.name.name << "\n";
+						stream << "      Linkbuilder: " << nodeTopology->interfaces[j].neighbors[k].linkBuilder << "\n";
+						stream << "      DomainLevel: " << nodeTopology->interfaces[j].neighbors[k].domainLevel << "\n";
+						stream << "      SuperNode: " << nodeTopology->interfaces[j].neighbors[k].superNodeId.type << " / " << nodeTopology->interfaces[j].neighbors[k].superNodeId.nickName << " / " << nodeTopology->interfaces[j].neighbors[k].superNodeId.name.name << "\n\n";
+					}
+
+				}
+
+				sortedTierItem = sortedTierItem->nextItem;
+			}  // ENDWHILE sortedTierItem
+
+		} // ENDFOR currentNumberTiers
+
+	}  // ENDIF logLevel
+				
+	stream << "Destinations and routes:\n";
+
+	for (i = 1; i < st->currentNumberTiers; i++) {
+		sortedTierItem = st->tierTopology[i].firstTierListItem;
+
+		while (sortedTierItem != 0) {
+
+			for (j = 0; j < sortedTierItem->numberRoutes; j++) {
+				k = 0;
+				segment = &sortedTierItem->routes[j].routeSegment[k];
+				id = sortedTierItem->routes[j].destNodeId;
+				stream << "  Destination node: " << id.nickName << " / " << sortedTierItem->routes[j].destNodeId.name.name << " Route: " << "\n";
+
+				while (globalNameSpace->check_ifValid(segment->exitNodeInfId.name) == true) {
+					stream << "    Segment " << k << ":\n";
+					id = segment->nodeId;
+					stream << "      Node: " << id.nickName << " / " << id.name.name << " EntryNodeInf: " << segment->entryNodeInfId.name.name;
+
+					stream << " ExitNodeInf: " << segment->exitNodeInfId.name.name << "\n";
+					k++;
+					segment = &sortedTierItem->routes[j].routeSegment[k];
+				};
+
+			};
+			sortedTierItem = sortedTierItem->nextItem;
+		};  // ENDWHILE sortedTierItem
+
+	};  // ENDFOR currentNumberTiers
+
+	stream << "End_SortedTopology_Status\n";
+	return stream;
+};
