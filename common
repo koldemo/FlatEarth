@@ -1,0 +1,576 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <new>
+using namespace std;
+
+#include "C:\Users\CLONEZILLA\Documents\Visual Studio 2008\Projects\Netcell_test\Netcell_test\definitions.h"
+
+// CLASS ETCETERA FUNCTIONS
+int Etcetera::intToCharLength(int number) {
+	int i;
+
+	i = 0;
+
+	while (number > 0) {
+		number /= 10;
+		i++;
+	}
+
+	return(i);
+};
+
+int Etcetera::intToCharLength(unsigned int number) {
+	int i;
+
+	i = 0;
+
+	while (number > 0) {
+		number /= 10;
+		i++;
+	}
+
+	return(i);
+};
+
+int Etcetera::intToCharLength(unsigned __int64 number) {
+	int i;
+
+	i = 0;
+
+	while (number > 0) {
+		number /= 10;
+		i++;
+	}
+
+	return(i);
+};
+
+void Etcetera::tabFill(int totalLength, int length, std::ofstream &out) {
+	int numTabs;
+	numTabs = totalLength - length;
+
+	while (numTabs > 0) {
+		out << "\t";
+		numTabs -= 8;  // Tab is 8 characters
+	}
+};
+
+// CLASS GLOBALNAME FUNCTIONS
+void GlobalName::GlobalName_init() {
+	lastAllocatedName.name = 0;  // Value zero is actually an invalid name
+	allocatedNamesCount = 0;
+};
+
+Name_s GlobalName::allocate_globalName() {
+	lastAllocatedName.name++;
+	allocatedNamesCount++;
+	return(lastAllocatedName);
+};
+
+bool GlobalName::check_ifValid(Name_s name) {
+
+	if (name.name != 0) {
+		return(true);
+	}
+	else {
+		return(false);
+	};
+
+};
+
+bool GlobalName::check_ifEqual(Name_s name1, Name_s name2) {
+
+	if (name1.name == name2.name) {
+//		cout << "name equal\n";
+		return(true);
+	}
+	else {
+//		cout << "name not equal\n";
+		return(false);
+	}
+
+};
+
+bool GlobalName::compare_names(Name_s name1, Name_s name2) {  // Returns true if first name is "higher" than the second
+
+	if (name1.name > name2.name) {
+		return(true);
+	}
+	else {
+		return(false);
+	};
+
+};
+
+
+Name_s GlobalName::reset_globalName() {
+	Name_s name;
+
+	name.name = 0;
+	return(name);
+};
+
+int GlobalName::get_namesCount() {return(allocatedNamesCount); };
+
+
+int GlobalName::get_nameLength(Name_s name) {
+	int i;
+
+	i = 0;
+
+	while (name.name > 0) {
+		name.name /= 10;
+		i++;
+	}
+
+	return(i);
+};
+
+// CLASS IDENTITY FUNCTIONS
+void Identity::Identity_init(Identity_s *id) {
+	bool idError = false;
+
+	identity.type = "UN-BAPTIZED";
+	if (id->type.size() > MAX_TYPE_LENGTH) {SYSTEM->runtimerror(&identity, "Identity_init","Too_long_Type_string", SYS_ERR_SOFT); idError = true;}
+	if (id->type.size() < MIN_TYPE_LENGTH) {SYSTEM->runtimerror(&identity, "Identity_init","Too_short_Type_string", SYS_ERR_SOFT); idError = true;}
+	
+	if (idError == false) {
+		identity.type = id->type;
+		identity.nickName = id->nickName;
+		identity.name = globalNameSpace->allocate_globalName();
+	};
+
+};
+
+Identity_s Identity::get_identity() {
+	return(identity);
+};
+
+Identity_s Identity::reset_anotherIdentity() {
+	Identity_s id;
+
+	id.type = id.nickName = "-";
+	id.name = globalNameSpace->reset_globalName();
+
+	return (id);
+};
+
+ostream &operator<<(ostream &stream, Identity *id) {
+	stream << "Type: " << id->identity.type << " Nickname: " << id->identity.nickName << " Name: " << id->identity.name.name;
+	return stream;
+};
+
+// CLASS ENTITY FUNCTIONS
+void Entity::Entity_init(Identity_s *id, unsigned int ttl, Identity_s *liveKeeper) {
+	identity.Identity_init(id);
+
+
+	if (ttl > 0) {
+		liveKeeperId = *liveKeeper;  // Only make sense to save if ttl > 0
+		timeToLiveTicks = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(ttl));
+		entCallbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->msToTick(ttl-1), CB_ENTITY, 0);
+	}
+	else {
+		liveKeeperId = this->reset_anotherIdentity();
+		timeToLiveTicks.tickPoint = 0;
+		entCallbackRef = -1;
+	};
+		
+};
+
+void Entity::Entity_delete() {
+
+	if (entCallbackRef != -1) {
+		SYSTEM->delete_ticksQueueEvent(entCallbackRef);
+		entCallbackRef = -1;
+		cout << "Entity Callback\n";
+	}
+
+};
+
+Identity_s Entity::get_identity() {
+	return(identity.get_identity());
+};
+
+Identity_s Entity::reset_anotherIdentity() {
+	return(identity.reset_anotherIdentity());
+};
+
+int Entity::update_liveKeeper(Identity_s *id) {
+
+	if (identity.get_identity().nickName == "SN_57") {
+		cout << "57";
+	}
+
+	if (globalNameSpace->check_ifValid(id->name) == true) {
+		liveKeeperId = *id;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "update_liveKeeper", "Invalid_id", SYS_ERR_SOFT);
+		return(-1);
+	};
+
+};
+
+Identity_s *Entity::get_liveKeeper() {
+	return(&liveKeeperId);
+}
+
+int Entity::update_timeToLive(unsigned int ttl, Identity_s *liveKeeper) {  // ttl must be > 0 and is relative to present time
+
+	if (ttl > 0 && globalNameSpace->check_ifEqual(liveKeeperId.name, liveKeeper->name) == true) {  // Only accept update from current liveKeeper
+		timeToLiveTicks = SYSTEM->addTicks(SYSTEM->getTicks(), SYSTEM->msToTick(ttl));
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&identity.get_identity(), "update_timeToLive", "New_timeToLive_before_current_value_OR_non_accepted_livekeeper", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+TickPoint_s Entity::get_timeToLive() {
+	return(timeToLiveTicks);
+};
+
+void Entity::CALLBACK_checkTimeToLive() {
+	TickPoint_s timeToLive;
+	unsigned int ttl;
+
+	if (timeToLiveTicks.tickPoint >= SYSTEM->getTicks().tickPoint) {
+		timeToLive.tickPoint = timeToLiveTicks.tickPoint - SYSTEM->getTicks().tickPoint;
+		ttl = SYSTEM->ticksToMs(timeToLive);
+		entCallbackRef = SYSTEM->ticksQueue(this, 0, SYSTEM->msToTick(ttl-1), CB_ENTITY, 0);
+	}
+	else {  // The Entity shall terminate
+		SYSTEM->req_entityDeletion(&identity.get_identity(), this);
+		entCallbackRef = -1;
+	};
+
+};
+
+ostream &operator<<(ostream &stream, Entity *en) {
+	Identity *idp;
+
+	idp = &en->identity;
+	stream << idp;
+
+	stream << " Time_to_live: " << en->timeToLiveTicks.tickPoint << "\n";
+
+	return stream;
+};
+
+// CLASS DOMAINLEVELALGEBRA FUNCTIONS
+DomainLevel DomainLevelAlgebra::decreaseDomainLevel(DomainLevel level) {
+	DomainLevel newLevel;
+
+	switch (level) {
+
+		case DL_GLOBAL:
+			newLevel = DL_1;
+			break;
+
+		case DL_1:
+			newLevel = DL_2;
+			break;
+			
+		case DL_2:
+			newLevel = DL_3;
+			break;
+			
+		case DL_3:
+			newLevel = DL_4;
+			break;
+
+		case DL_4:
+			newLevel = DL_5;
+			break;
+
+		case DL_5:
+			newLevel = DL_6;
+			break;
+
+		case DL_6:
+			newLevel = DL_7;
+			break;
+
+		case DL_7:
+			newLevel = DL_8;
+			break;
+
+		case DL_8:
+			newLevel = DL_9;
+			break;
+			
+		case DL_9:
+			newLevel = DL_10;
+			break;
+
+		case DL_10:
+			newLevel = DL_LOWEST;
+			break;
+
+		case DL_LOWEST:
+			newLevel = DL_UNASSIGNED;
+			break;
+
+		default:
+			newLevel = level;
+			break;
+
+	};
+
+	return (newLevel);
+
+};
+
+DomainLevel DomainLevelAlgebra::increaseDomainLevel(DomainLevel level) {
+	DomainLevel newLevel;
+
+	switch (level) {
+
+		case DL_GLOBAL:
+			newLevel = DL_UNASSIGNED;
+			break;
+
+		case DL_1:
+			newLevel = DL_GLOBAL;
+			break;
+			
+		case DL_2:
+			newLevel = DL_1;
+			break;
+			
+		case DL_3:
+			newLevel = DL_2;
+			break;
+
+		case DL_4:
+			newLevel = DL_3;
+			break;
+
+		case DL_5:
+			newLevel = DL_4;
+			break;
+
+		case DL_6:
+			newLevel = DL_5;
+			break;
+
+		case DL_7:
+			newLevel = DL_6;
+			break;
+
+		case DL_8:
+			newLevel = DL_7;
+			break;
+			
+		case DL_9:
+			newLevel = DL_8;
+			break;
+
+		case DL_10:
+			newLevel = DL_9;
+			break;
+
+		case DL_LOWEST:
+			newLevel = DL_10;
+			break;
+
+		default:
+			newLevel = level;
+			break;
+
+	};
+
+	return (newLevel);
+
+};
+
+bool DomainLevelAlgebra::isHigher(DomainLevel level1, DomainLevel level2) {
+
+	if ((int) level1 < (int) level2) {
+		return (true);
+	}
+	else {
+		return (false);
+	};
+
+};
+
+// CLASS CALLBACKSYSTEM FUNCTIONS
+void CallbackSystem::CallbackSystem_init() {
+	secretTickZero = 0;
+};
+
+// CLASS CALLBACKPROTOCOL FUNCTIONS
+void CallbackProtocol::CallbackProtocol_init() {
+	secretSendPDU = secretPutPDUOnLink = secretRecPDUFromLink = secretProcessPDURxPDUs = 0;
+};
+
+// CLASS RESOURCE FUNCTIONS
+void Resource::Resource_init(Identity_s *id, GenericTraits_s traits){
+	identity.Identity_init(id);
+
+	genericTraits.completionTime = traits.completionTime;
+	genericTraits.mtbf = traits.mtbf;
+};
+
+
+GenericTraits_s Resource::get_genericTraits() {
+	return(genericTraits);
+};
+
+ostream &operator<<(ostream &stream, Resource *re) {
+	Identity *idp;
+
+	idp = &re->identity;
+	stream << idp << "\n";
+	stream << "CompletionTime: " << re->genericTraits.completionTime << "MTBF: " << re->genericTraits.mtbf << "\n";
+	return stream;
+};
+
+// CLASS ATTACHMENTPOINTRES FUNCTIONS
+void AttachmentpointRes::AttachmentpointRes_init(Identity_s *id, AttachmentpointTraits_s traits, GenericTraits_s genericTraits) {
+	attachmentpointTraits = traits;
+	Resource_init(id, genericTraits);
+};
+
+AttachmentpointTraits_s AttachmentpointRes::get_traits() {
+	return(attachmentpointTraits);
+};
+
+ostream &operator<<(ostream &stream, AttachmentpointRes *ap) {
+	Resource *re;
+
+	re = ap;
+
+	stream << re;
+	stream << "Data direction: " << ap->attachmentpointTraits.flowdir;
+
+	if (ap->attachmentpointTraits.beacon == true) {
+		stream << " This is a beacon";
+	}
+	else {
+		stream << " No beacon";
+	};
+
+	stream << "\n";
+
+	return stream;
+};
+
+// CLASS TRANSMISSIONRES FUNCTIONS
+void TransmissionRes::TransmissionRes_init(Identity_s *id, TransmissionTraits_s traits, GenericTraits_s genericTraits) {
+	transmissionTraits = traits;
+	Resource_init(id, genericTraits);
+};
+
+TransmissionTraits_s TransmissionRes::get_traits() {
+	return(transmissionTraits);
+};
+
+ostream &operator<<(ostream &stream, TransmissionRes *tr) {
+	Resource *re;
+
+	re = tr;
+
+	stream << re;
+	stream << "Bandwdith: " << tr->transmissionTraits.bandwidth << "BER: " << tr->transmissionTraits.ber << "\n";
+	return stream;
+};
+
+// CLASS PROCESSORRES FUNCTIONS
+void ProcessorRes::ProcessorRes_init(Identity_s *id, ProcessorTraits_s traits, GenericTraits_s genericTraits) {
+	processorTraits = traits;
+	Resource_init(id, genericTraits);
+};
+
+ProcessorTraits_s ProcessorRes::get_traits() {
+	return(processorTraits);
+};
+
+ostream &operator<<(ostream &stream, ProcessorRes *pr) {
+	Resource *re;
+
+	re = pr;
+
+	stream << re;
+	stream << "Capacity: " << pr->processorTraits.capacity << "\n";
+	return stream;
+};
+
+// CLASS MEMORYRES FUNCTIONS
+void MemoryRes::MemoryRes_init(Identity_s *id, MemoryTraits_s traits, GenericTraits_s genericTraits) {
+	memoryTraits = traits;
+	Resource_init(id, genericTraits);
+};
+
+MemoryTraits_s MemoryRes::get_traits() {
+	return(memoryTraits);
+};
+
+ostream &operator<<(ostream &stream, MemoryRes *me) {
+	Resource *re;
+
+	re = me;
+
+	stream << re;
+	stream << "Capacity: " << me->memoryTraits.capacity << "\n";
+	return stream;
+};
+
+// CLASS SWITCHCORERES FUNCTIONS
+void SwitchCoreRes::SwitchCoreRes_init(Identity_s *id, SwitchingTraits_s traits, GenericTraits_s genericTraits) {
+	switchingTraits = traits;
+	Resource_init(id, genericTraits);
+};
+
+SwitchingTraits_s SwitchCoreRes::get_traits() {
+	return(switchingTraits);
+};
+
+ostream &operator<<(ostream &stream, SwitchCoreRes *sc) {
+	Resource *re;
+
+	re = sc;
+
+	stream << re;
+	stream << "Capacity: " << sc->switchingTraits.capacity << "\n";
+	return stream;
+};
+
+// CLASS INTERFACERES FUNCTIONS
+void InterfaceRes::InterfaceRes_init(Identity_s *id, InterfaceTraits_s traits, AttachmentpointTraits_s attPointTraits, GenericTraits_s genericTraits) {
+	interfaceTraits = traits;
+	this->AttachmentpointRes_init(id, attPointTraits, genericTraits);
+};
+
+InterfaceTraits_s InterfaceRes::get_infTraits() {
+	return(interfaceTraits);
+};
+
+ostream &operator<<(ostream &stream, InterfaceRes *inf) {
+	AttachmentpointRes *ap;
+
+	ap = inf;
+
+	stream << ap;
+	stream << "TX queue length: " << inf->interfaceTraits.queueTxLength << " RX queue length: " << inf->interfaceTraits.queueRxLength << "\n";
+	return stream;
+};
+
+// CLASS LINKENDPOINTRES FUNCTIONS  (not really common)
+void LinkEndpointRes::LinkEndpointRes_init(Identity_s *id, AttachmentpointTraits_s attPointTraits, GenericTraits_s genericTraits) {
+	this->AttachmentpointRes_init(id, attPointTraits, genericTraits);
+};
+
+ostream &operator<<(ostream &stream, LinkEndpointRes *lep) {
+	AttachmentpointRes *ap;
+
+	ap = lep;
+	stream << ap;
+	return stream;
+};
