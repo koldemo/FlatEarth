@@ -1,0 +1,4353 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <new>
+using namespace std;
+
+#include "C:\Users\CLONEZILLA\Documents\Visual Studio 2008\Projects\Netcell_test\Netcell_test\definitions.h"
+
+
+void System::System_init(Identity_s *id, ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, init\n";}
+	// Initialize tick event list and tick queue.
+	int i, j;
+
+	this->Entity_init(id, 0, 0);
+
+	testOut = &out;
+
+	for (i = 0; i < SYS_MAX_TICKBREAKPOINTS; i++) {
+		tickBreakpoint[i].tickPoint = SYS_MAX_TICKPOINT;
+	};
+
+//	tickBreakpoint[0] = 1933;
+	tickBreakpointIndex = 0;
+
+	numberNodeInfTypes = numberSwitchCoreInfTypes = numberSwitchCoreTypes = numberNodeTypes = numberLinkEndpointTypes = numberLinkTypes = numberClusterTypes = 0;
+
+	for (i = 0; i < MAX_NODEINSTANCES; i++) {
+		nodeInstance[i].nodeRef = 0;
+		nodeInstance[i].nextFree = &nodeInstance[i+1];
+	};
+
+	nodeInstance[MAX_NODEINSTANCES-1].nextFree = 0;
+	nodeInstance[0].prevInst = 0;
+	numberNodeInstances = 0;
+	nextFreeNodeInst = &nodeInstance[0];
+	lastNodeCreated = 0;
+
+	for (i = 0; i < MAX_LINKINSTANCES; i++) {
+		linkInstance[i].linkRef = 0;
+		linkInstance[i].nextFree = &linkInstance[i+1];
+	};
+
+	linkInstance[MAX_LINKINSTANCES-1].nextFree = 0;
+	linkInstance[0].prevInst = 0;
+	numberLinkInstances = 0;
+	nextFreeLinkInst = &linkInstance[0];
+	lastNodeCreated = 0;
+	lastCeasedEnt = 0;
+
+	sysEventList[0].prevFree = 0;
+	sysEventList[0].nextFree = &sysEventList[1];
+	sysEventList[SIZE_SYSEVENTLIST-1].prevFree = &sysEventList[SIZE_SYSEVENTLIST-2];
+	sysEventList[SIZE_SYSEVENTLIST-1].nextFree = 0;
+
+	for (i = 1; i < SIZE_SYSEVENTLIST-1; i++) {
+		sysEventList[i].prevFree = &sysEventList[i-1];
+		sysEventList[i].nextFree = &sysEventList[i+1];
+	};
+
+	firstFreeEvent = &sysEventList[0];
+
+	sysTickQueue[0].prevFree = 0;
+	sysTickQueue[0].firstEvent = sysTickQueue[0].lastEvent = 0;
+	sysTickQueue[0].nextFree = &sysTickQueue[1];
+	sysTickQueue[SIZE_SYSTICKQUEUE-1].prevFree = &sysTickQueue[SIZE_SYSTICKQUEUE-2];
+	sysTickQueue[SIZE_SYSTICKQUEUE-1].firstEvent = sysTickQueue[SIZE_SYSTICKQUEUE-1].lastEvent = 0;
+	sysTickQueue[SIZE_SYSTICKQUEUE-1].nextFree = 0;
+
+	for (i = 1; i < SIZE_SYSTICKQUEUE-1; i++) {
+		sysTickQueue[i].prevFree = &sysTickQueue[i-1];
+		sysTickQueue[i].firstEvent = sysTickQueue[i].lastEvent = 0;
+		sysTickQueue[i].nextFree = &sysTickQueue[i+1];
+	};
+
+	eventRefCounter = 1;
+
+	for (i = 0; i < SYS_MAX_POLLS; i++) {
+		nodePoll[i].pollName = "-";
+		nodePoll[i].startPoll.tickPoint = nodePoll[i].closePoll.tickPoint = nodePoll[i].pollFrequency.tickPoint = nodePoll[i].nextPoll.tickPoint = 0;
+		nodePoll[i].loggedTraceTailCopy = -1;
+
+		for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+			nodePoll[i].nodeRef[j] = 0;
+		}
+
+	}
+
+	logScope = SYS_LS_ALL;
+	logLevel = SYS_LL_ALL;
+	roll_errorLog = false;
+
+	firstFreeTickEvent = &sysTickQueue[0];
+	nextTickEvent = lastTickEvent = 0;
+	currentTickPoint.tickPoint = 0;
+	currentNumberTickEvents = currentNumberEvents = 0;
+	loggedErrorHead = loggedErrorTail = currentNumberErrors = 0;
+	loggedTraceHead = loggedTraceTail = currentNumberTraceEvents = 0;
+	stopSimulation = false;
+	protTraceIndex = 0;
+	SYS_threadTrace = SYS_funcTrace = SYS_eventTrace = SYS_funcSysTrace = SYS_traceFile = SYS_deleteObjects = SYS_protTrace = false;
+	SYS_breakOnError = SYS_ERR_NOBREAK;
+	this->randomNumberInit();
+};
+
+int System::ticksQueue(CallbackSystem *callback, void *parameters, TickPoint_s ticks, CallbackId cb, int secret) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, ticksQueue\n";}
+	TickPoint_s roundedTickPoint, lastTickPoint;
+	SYS_TickEvent_s *tickEventPoint, *newTickEventPoint;
+	SYS_Event_s *newEvent;
+
+	roundedTickPoint.tickPoint = currentTickPoint.tickPoint + ticks.tickPoint;
+
+	tickEventPoint = this->findTickQueuePoint(roundedTickPoint);
+
+	if (lastTickEvent == 0) {
+		lastTickPoint.tickPoint = 0;
+	}
+	else {
+		lastTickPoint.tickPoint = lastTickEvent->tickTime.tickPoint;
+	};
+
+	if (tickEventPoint == lastTickEvent) {  // This a tick event point beyond or at current last tick event
+
+		if (lastTickPoint.tickPoint < roundedTickPoint.tickPoint) { // Allocate a new tick event
+			
+			if (firstFreeTickEvent != 0) {
+				newTickEventPoint = firstFreeTickEvent;
+				newTickEventPoint->tickTime.tickPoint = roundedTickPoint.tickPoint;
+				newTickEventPoint->prevTick = lastTickEvent;
+				newTickEventPoint->nextTick = 0;
+
+				if (tickEventPoint != 0) {
+					tickEventPoint->nextTick = newTickEventPoint;
+				}
+				else {
+					nextTickEvent = newTickEventPoint;
+				};
+
+				lastTickEvent = newTickEventPoint;
+
+				// Allocate an event
+				if (firstFreeEvent != 0) {
+					newEvent = firstFreeEvent;
+					newTickEventPoint->firstEvent = newTickEventPoint->lastEvent = newEvent;
+					newEvent->prevEvent = newEvent->nextEvent = 0;
+					newEvent->callback = callback;
+					newEvent->callbackId = cb;
+					newEvent->secret = secret;
+					newEvent->params = parameters;
+					newEvent->eventRef = eventRefCounter++;
+					currentNumberEvents++;
+					firstFreeEvent = firstFreeEvent->nextFree;
+				}
+				else {
+					this->runtimerror(&get_identity(), "ticksQueue", "EventList_exhausted", SYS_ERR_HARD);
+				};
+
+				firstFreeTickEvent = firstFreeTickEvent->nextFree;
+				currentNumberTickEvents++;
+			}
+			else {
+				this->runtimerror(&get_identity(), "ticksQueue", "TickEventQueue_exhausted", SYS_ERR_HARD);
+			};
+
+		}
+		else { // Just allocate a new event
+			
+			if (firstFreeEvent != 0) {
+				newEvent = firstFreeEvent;
+				tickEventPoint->lastEvent->nextEvent = newEvent;
+				newEvent->prevEvent = tickEventPoint->lastEvent;
+				newEvent->nextEvent = 0;
+				newEvent->callback = callback;
+				newEvent->params = parameters;
+				newEvent->callbackId = cb;
+				newEvent->secret = secret;
+				newEvent->eventRef = eventRefCounter++;
+				currentNumberEvents++;
+				tickEventPoint->lastEvent = newEvent;
+				firstFreeEvent = firstFreeEvent->nextFree;
+			}
+			else {
+				this->runtimerror(&get_identity(), "ticksQueue", "EventList_exhausted", SYS_ERR_HARD);
+			};
+
+		};
+
+	}
+	else if (tickEventPoint == 0) {  // This is a tick event before the next one, i.e. before the first one in queue (or possibly an empty queue)
+
+		if (firstFreeTickEvent != 0) {
+			newTickEventPoint = firstFreeTickEvent;
+			newTickEventPoint->tickTime.tickPoint = roundedTickPoint.tickPoint;
+			newTickEventPoint->prevTick = 0;
+
+			if (currentNumberTickEvents > 0) {  // There are at least one other tick event in queue
+				newTickEventPoint->nextTick = nextTickEvent;
+				nextTickEvent->prevTick = newTickEventPoint;
+			}
+			else {
+				newTickEventPoint->nextTick = 0;
+			};
+
+			nextTickEvent = newTickEventPoint;
+
+			// Allocate an event
+			if (firstFreeEvent != 0) {
+				newEvent = firstFreeEvent;
+				newTickEventPoint->firstEvent = newTickEventPoint->lastEvent = newEvent;
+				newEvent->prevEvent = newEvent->nextEvent = 0;
+				newEvent->callback = callback;
+				newEvent->params = parameters;
+				newEvent->callbackId = cb;
+				newEvent->secret = secret;
+				newEvent->eventRef = eventRefCounter++;
+				currentNumberEvents++;
+				firstFreeEvent = firstFreeEvent->nextFree;
+			}
+			else {
+				this->runtimerror(&get_identity(), "ticksQueue", "EventList_exhausted", SYS_ERR_HARD);
+			};
+
+			firstFreeTickEvent = firstFreeTickEvent->nextFree;
+			currentNumberTickEvents++;
+		}
+		else {
+			this->runtimerror(&get_identity(), "ticksQueue", "TickEventQueue_exhausted", SYS_ERR_HARD);
+		};
+
+	}
+	else {  // This is a tick event that points somewhere in the existing list of events
+
+		if (tickEventPoint->tickTime.tickPoint != roundedTickPoint.tickPoint) {  // There is a need to allocate a new tick event after the one pointed to by tickEventPoint
+
+			if (firstFreeTickEvent != 0) {
+				newTickEventPoint = firstFreeTickEvent;
+				newTickEventPoint->tickTime = roundedTickPoint;
+				newTickEventPoint->prevTick = tickEventPoint;
+				newTickEventPoint->nextTick = tickEventPoint->nextTick;
+				tickEventPoint->nextTick->prevTick = newTickEventPoint;
+				tickEventPoint->nextTick = newTickEventPoint;
+
+				// Allocate an event
+				if (firstFreeEvent != 0) {
+					newEvent = firstFreeEvent;
+					newTickEventPoint->firstEvent = newTickEventPoint->lastEvent = newEvent;
+					newEvent->prevEvent = newEvent->nextEvent = 0;
+					newEvent->callback = callback;
+					newEvent->params = parameters;
+					newEvent->callbackId = cb;
+					newEvent->secret = secret;
+					newEvent->eventRef = eventRefCounter++;
+					currentNumberEvents++;
+					firstFreeEvent = firstFreeEvent->nextFree;
+				}
+				else {
+					this->runtimerror(&get_identity(), "ticksQueue", "EventList_exhausted", SYS_ERR_HARD);
+				};
+
+				firstFreeTickEvent = firstFreeTickEvent->nextFree;
+				currentNumberTickEvents++;
+			}
+			else {
+				this->runtimerror(&get_identity(), "ticksQueue", "TickEventQueue_exhausted", SYS_ERR_HARD);
+			};
+
+		}
+		else {  // Just allocate a new event
+
+			if (firstFreeEvent != 0) {
+				newEvent = firstFreeEvent;
+				tickEventPoint->lastEvent->nextEvent = newEvent;
+				newEvent->prevEvent = tickEventPoint->lastEvent;
+				newEvent->nextEvent = 0;
+				newEvent->callback = callback;
+				newEvent->params = parameters;
+				newEvent->callbackId = cb;
+				newEvent->secret = secret;
+				newEvent->eventRef = eventRefCounter++;
+				currentNumberEvents++;
+				tickEventPoint->lastEvent = newEvent;
+				firstFreeEvent = firstFreeEvent->nextFree;
+			}
+			else {
+				this->runtimerror(&get_identity(), "ticksQueue", "EventList_exhausted", SYS_ERR_HARD);
+			};
+
+		};
+
+	};  // ENDIF tickEventPoint
+
+	eventRefCounter &= 0x7FFFFFFF;  // See to that it never becomes negative, which is an invalid value;
+	return(newEvent->eventRef);
+};
+
+int System::delete_ticksQueueEvent(int eventRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, delete_ticksQueueEvent\n";}
+	SYS_TickEvent_s *tickEvent, *oldTickEvent;
+	SYS_Event_s *oneEvent, *oldEvent;
+	bool tickEventFound, eventFound;
+
+	tickEvent = nextTickEvent;
+	tickEventFound = false;
+
+	while (tickEvent != 0 && tickEventFound == false) {
+		oneEvent = tickEvent->firstEvent;
+		eventFound = false;
+
+		while (oneEvent != 0 && eventFound == false) {
+
+			if (oneEvent->eventRef == eventRef) {
+				eventFound = tickEventFound = true;
+				oldTickEvent = tickEvent;
+				oldEvent = oneEvent;
+			}
+			else {
+				oneEvent = oneEvent->nextEvent;
+			};
+
+		};
+
+		if (tickEventFound == false) {
+			tickEvent = tickEvent->nextTick;
+		}
+
+	};
+
+	if (eventFound == true) {
+		cout << " oldTickEvent: " << oldTickEvent->tickTime.tickPoint << " nextTickEvent: " << nextTickEvent->tickTime.tickPoint << " nextNextTickEvent " << nextTickEvent->nextTick->tickTime.tickPoint << "\n";
+
+		if (oldTickEvent->firstEvent == oldEvent) {  // First event in the list
+
+			if (oldTickEvent->firstEvent->nextEvent != 0) {  // There is at least one more event in the list of events
+				oldTickEvent->firstEvent = oldTickEvent->firstEvent->nextEvent;
+				oldTickEvent->firstEvent->prevEvent = 0;
+			}
+			else {
+				// Also remove this tickEvent as there are no more events for this tickEvent
+				oldTickEvent->firstEvent = oldTickEvent->lastEvent = 0;
+				oldTickEvent->tickTime.tickPoint = 0;
+				oldTickEvent->prevFree = 0;
+				oldTickEvent->nextFree = firstFreeTickEvent;
+				firstFreeTickEvent->prevFree = oldTickEvent;
+				firstFreeTickEvent = oldTickEvent;
+
+				if (oldTickEvent == nextTickEvent) {  // First tickEvent
+					nextTickEvent = nextTickEvent->nextTick;
+				}
+				else if (oldTickEvent == lastTickEvent) {  // Last tickEvent
+					lastTickEvent = oldTickEvent->prevTick;
+				}
+				else {  // Somewhere inbetween
+					oldTickEvent->prevTick->nextTick = oldTickEvent->nextTick;
+					oldTickEvent->nextTick->prevTick = oldTickEvent->prevTick;
+				};
+
+				currentNumberTickEvents--;
+			};
+
+		}
+		else if (oldTickEvent->lastEvent == oldEvent) {  // Last event in the list
+			oldTickEvent->lastEvent->prevEvent->nextEvent = 0;
+			oldTickEvent->lastEvent = oldTickEvent->lastEvent->prevEvent;
+		}
+		else {  // Somewhere inbetween
+			oldEvent->prevEvent->nextEvent = oldEvent->nextEvent;
+			oldEvent->nextEvent->prevEvent = oldEvent->prevEvent;
+		};
+
+		oldEvent->nextFree = firstFreeEvent;
+		firstFreeEvent->prevFree = oldEvent;
+		oldEvent->prevFree = 0;
+		firstFreeEvent = oldEvent;
+		currentNumberEvents--;
+
+		cout << " nextTickEvent: " << nextTickEvent->tickTime.tickPoint << " nextNextTickEvent " << nextTickEvent->nextTick->tickTime.tickPoint << "\n";
+	}
+	else {
+		runtimerror(&get_identity(), "delete_ticksQueueEvent", "Invalid_event_reference", SYS_ERR_HARD);
+		return(-1);
+	};
+
+	return(0);
+};
+
+TickPoint_s System::getTicks() {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, getTicks\n";}
+	return(currentTickPoint);
+};
+
+TickPoint_s System::msToTick(unsigned int milliSeconds) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, msToTick\n";}
+	TickPoint_s ticks;
+	ticks.tickPoint = (__int64) (milliSeconds * TICK_MILLISECOND)/TICKS_RESOLUTION;
+	return(ticks);
+};
+
+unsigned int System::ticksToMs(TickPoint_s ticks) {  // Should only be used for relative ticks, not for ABSOLUTE ticks
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, ticksToMs\n";}
+	return((unsigned int) (ticks.tickPoint * TICKS_RESOLUTION)/TICK_MILLISECOND);
+};
+
+TickPoint_s System::addTicks(TickPoint_s ticks1, TickPoint_s ticks2) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, addTicks\n";}
+	TickPoint_s ticks;
+	ticks.tickPoint = ticks1.tickPoint + ticks2.tickPoint;
+	return(ticks);
+};
+
+TickPoint_s System::subTicks(TickPoint_s ticks1, TickPoint_s ticks2) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, subTicks\n";}
+	TickPoint_s ticks;
+	ticks.tickPoint = ticks1.tickPoint - ticks2.tickPoint;
+	return(ticks);
+};
+
+int System::runtimerror(Identity_s *id, string routine, string reason, SYS_BreakOnError errorLevel) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, runtimerror\n";}
+	SYS_RunTimError_s *errorRef;
+	ofstream errout;
+	int i;
+	string input;
+
+	if (currentNumberErrors < SIZE_ERRORLOG || roll_errorLog == true) {
+		loggedError[loggedErrorHead].tickPoint.tickPoint = currentTickPoint.tickPoint;
+		loggedError[loggedErrorHead].source = *id;
+		loggedError[loggedErrorHead].classFunction = routine;
+		loggedError[loggedErrorHead].reason = reason;
+		loggedError[loggedErrorHead].errorLevel = errorLevel;
+		errorRef = &loggedError[loggedErrorHead];
+		currentNumberErrors++;
+		loggedErrorHead++;
+		loggedErrorHead &= (SIZE_ERRORLOG-1);
+
+		if (SYS_traceFile == true) {
+			this->errorTrace(errorRef);
+		}
+		else {
+			cout << "ERROR!!!!" << " Tickpoint: " << currentTickPoint.tickPoint << " Type: " << id->type << " Nickname" << id->nickName << " Name: " << id->name.name << " Function: " << routine << " Reason: " << reason << " Error level: " << errorLevel << "\n";
+		};
+
+		if (SYS_breakOnError == errorLevel || SYS_breakOnError == SYS_ERR_BREAKALL) {
+			cout << " BREAK ON ERROR! " << " tickPoint: " << currentTickPoint.tickPoint << " " << id->type << "/" << id->nickName << "/" << id->name.name << " Function: " << routine << " Reason: " << reason << " Error level: " << errorLevel; cin >> input;
+		}
+
+		if ((string) input == "s") {  // Stop simulation and exit, will be done via the runSimulation function
+			stopSimulation = true;
+		};
+
+	}
+	else {
+		cout << "Error log full!\n";
+		errout.open("errorLog.txt");
+
+		for (i = 0; i < SIZE_ERRORLOG; i++) {
+			errout << "Tickpoint: " << loggedError[loggedErrorTail].tickPoint.tickPoint << "\n";
+			errout << "  Identity: ";
+			errout << loggedError[loggedErrorTail].source.type << "/" << loggedError[loggedErrorTail].source.nickName << "/" << loggedError[loggedErrorTail].source.name.name << "\n";
+			errout << "  Class function: " << loggedError[loggedErrorTail].classFunction << "\n";
+			errout << "  Reason: " << loggedError[loggedErrorTail].reason << "\n";
+			errout << "  Error level " << loggedError[loggedErrorTail].errorLevel << "\n";
+			loggedErrorTail++;
+			loggedErrorTail &= (SIZE_ERRORLOG-1);
+		}
+
+		this->logDefinitions(errout);
+		this->logTraceEvents(errout);
+		this->logTopology(errout);
+		this->logProtTrace(errout);
+		errout.close();
+		exit(-1);
+	};
+
+	return(0);
+};
+
+
+TickPoint_s System::jitterbug(TickPoint_s ticks) {  // Should only be used for relative ticks, not ABSOLUTE ticks
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, jitterbug\n";}
+	unsigned int shiftedNumber, randomNumber, bitmask, i;
+	bool plusSign;
+	TickPoint_s jitteredTicks;
+
+	randomNumber = this->generate_randomNumber();
+
+	if (randomNumber > (unsigned int) MAX_RANDOMNUMBER/2) {
+		plusSign = true;
+	}
+	else {
+		plusSign = false;
+	};
+
+	bitmask = 1;
+	shiftedNumber = (unsigned int) ticks.tickPoint >> 3;  // Divide intially by 8
+	i = 1;
+
+	while (shiftedNumber > 1) {
+		bitmask += 2*i;
+		shiftedNumber = shiftedNumber >> 1;
+		i = i*2;
+	};
+
+	randomNumber = randomNumber & bitmask;
+
+	if (plusSign == true) {
+		jitteredTicks.tickPoint = ticks.tickPoint + (unsigned __int64) randomNumber;
+	}
+	else {
+		jitteredTicks.tickPoint = ticks.tickPoint - (unsigned __int64) randomNumber;
+	};
+
+	return(jitteredTicks);
+};
+
+int System::set_logScope(SYS_LogScope logSc) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, set_logScope\n";}
+
+	if (logSc < SYS_LS_UNDEFINED) {
+		logScope = logSc;
+		return(0);
+	}
+	else {
+		this->runtimerror(&this->get_identity(), "set_logScope", "Invalid_log_scope", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+SYS_LogScope System::get_logScope() { 
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, get_logScope\n";}
+	return(logScope); 
+};
+
+int System::set_logLevel(SYS_LogLevel logLvl) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, set_logLevel\n";}
+
+	if (logLvl < SYS_LL_UNDEFINED) {
+		logLevel = logLvl;
+		return(0);
+	}
+	else {
+		this->runtimerror(&this->get_identity(), "set_logLevel", "Invalid_log_level", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+SYS_LogLevel System::get_logLevel() { 
+		if (SYS_funcSysTrace== true) { cout << "SYSTEM, get_logLevel\n";}
+		return(logLevel); 
+};
+
+SYS_TickEvent_s *System::findTickQueuePoint(TickPoint_s ticks) {  // Returns a pointer to the relevant tick event or to the the previous event, 0 if no previous tick event
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, findTickQueuePoint\n";}
+
+	TickPoint_s tickPoint;
+	SYS_TickEvent_s *tickEvent, *foundTickEvent;
+	bool tickEventFound;
+
+	tickPoint.tickPoint = ticks.tickPoint;
+
+	if (currentNumberTickEvents > 0) {
+
+		if (tickPoint.tickPoint > lastTickEvent->tickTime.tickPoint) { // This is a tick point beyond the last one
+			return(lastTickEvent);
+		}
+		else if (tickPoint.tickPoint < nextTickEvent->tickTime.tickPoint) { // This is a tick point before the next one (i.e. the first) in queue
+			return(0);
+		}
+		else if (tickPoint.tickPoint >= (lastTickEvent->tickTime.tickPoint - 100) && tickPoint.tickPoint > nextTickEvent->tickTime.tickPoint) {  // Start searching from the end
+			tickEventFound = false;
+			tickEvent = lastTickEvent;
+
+			while (tickEventFound == false) {
+
+				if (tickEvent->tickTime.tickPoint == tickPoint.tickPoint || tickEvent->tickTime.tickPoint < tickPoint.tickPoint) { // This is the one, or the previous one
+					tickEventFound = true;
+					foundTickEvent = tickEvent;
+				};
+
+				tickEvent = tickEvent->prevTick;
+
+			};
+
+			return(foundTickEvent);
+
+		}
+		else { // Start searching from the beginning
+			tickEventFound = false;
+			tickEvent = nextTickEvent;
+
+			while (tickEventFound == false) {
+
+				if (tickEvent->tickTime.tickPoint == tickPoint.tickPoint) { // This is the one
+					tickEventFound = true;
+					foundTickEvent = tickEvent;
+				}
+				else if (tickEvent->tickTime.tickPoint > tickPoint.tickPoint) {  // This is the next one
+					tickEventFound = true;
+					foundTickEvent = tickEvent->prevTick;
+				};
+
+				tickEvent = tickEvent->nextTick;
+
+			};
+
+			return(foundTickEvent);
+		};
+
+	}
+	else {
+		return(0);
+	};
+
+};
+
+void System::progressTicksQueue() {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, progressTicksQueue\n";}
+	SYS_Event_s *thisEvent;
+
+	if (currentTickPoint.tickPoint == nextTickEvent->tickTime.tickPoint) {
+		// Execute all events for this tick event, and then de-allocate the tick event as well as all events
+		thisEvent = nextTickEvent->firstEvent;
+
+		while (thisEvent != 0) {
+//			cout << "secret: " << thisEvent->secret;
+
+			if (thisEvent->callbackId != CB_ENTITY) {
+				thisEvent->callback->CALLBACK_tickZero(thisEvent->params, thisEvent->secret);
+			}
+			else {
+				thisEvent->callback->CALLBACK_checkTimeToLive();
+			};
+
+			thisEvent->prevFree = 0;
+			thisEvent->nextFree = firstFreeEvent;
+			firstFreeEvent->prevFree = thisEvent;
+			firstFreeEvent = thisEvent;
+			currentNumberEvents--;
+			thisEvent = thisEvent->nextEvent;
+		};
+
+		nextTickEvent->firstEvent = nextTickEvent->lastEvent = 0;
+		nextTickEvent->tickTime.tickPoint = 0;
+		nextTickEvent->prevFree = 0;
+		nextTickEvent->nextFree = firstFreeTickEvent;
+		firstFreeTickEvent->prevFree = nextTickEvent;
+		firstFreeTickEvent = nextTickEvent;
+		nextTickEvent = nextTickEvent->nextTick;
+		currentNumberTickEvents--;
+	};
+
+};
+
+void System::randomNumberInit() {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, randomNumberInit\n";}
+	controlNumber = 3752361962;
+	addNumber = 1;
+};
+
+unsigned int System::generate_randomNumber() {
+		if (SYS_funcSysTrace== true) { cout << "SYSTEM, generate_randomNumber\n";}
+/*
+randomNumber = randomNumber XOR controlNumber XOR seed XOR addNumber
+seedShift = randomNumber AND 0x0000000F (at least 1 if OR operation results in 0 value)
+seed = seed ROTATERIGHT seedshift
+controlShift = randomNumber AND 0x000000F0 RIGHTSHIFT 4 (see comment for seedShift)
+controlNumber = controlNumber ROTATELEFT controlShift
+addNumber = addNumber + seedShift + controlShift
+return(randomNumber)
+*/
+	unsigned int seedShift, controlShift;
+
+	randomNumber = randomNumber ^ controlNumber ^ seed ^ addNumber;
+	seedShift = randomNumber & 0x0000000F;
+
+	if (seedShift == 0) {
+		seedShift++;
+	}
+
+	seed = this->randomRotateNumber(RIGHT, seed, seedShift);
+	controlShift = randomNumber>>4 & 0x0000000F;
+
+	if (controlShift == 0) {
+		controlShift++;
+	}
+
+	controlNumber = this->randomRotateNumber(LEFT, controlNumber, controlShift);
+
+	if (seedShift + controlShift > 0) {
+		addNumber = addNumber + (seedShift * controlShift) + ((seedShift + controlShift)<<16);
+	}
+	else {
+		addNumber += 7;
+	};
+
+	return(randomNumber);
+};
+
+unsigned int System::randomRotateNumber(Direction rotateDir, unsigned int number, unsigned int shift) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, randomRotateNumber\n";}
+	unsigned int shiftedNumber;
+
+	shiftedNumber = 0;
+
+	switch(shift) {
+
+		case 0:
+			;  // Do nothing
+			break;
+		case 1:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<1 | number>>31;
+			}
+			else {
+				shiftedNumber = number>>1 | number<<31;
+			};
+
+			break;
+		case 2:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<2 | number>>30;
+			}
+			else {
+				shiftedNumber = number>>2 | number<<30;
+			};
+
+			break;
+		case 3:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<3 | number>>29;
+			}
+			else {
+				shiftedNumber = number>>3 | number<<29;
+			};
+
+			break;
+		case 4:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<4 | number>>28;
+			}
+			else {
+				shiftedNumber = number>>4 | number<<28;
+			};
+
+			break;
+		case 5:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<5 | number>>27;
+			}
+			else {
+				shiftedNumber = number>>5 | number<<27;
+			};
+
+			break;
+		case 6:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<6 | number>>26;
+			}
+			else {
+				shiftedNumber = number>>6 | number<<26;
+			};
+
+			break;
+		case 7:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<7 | number>>25;
+			}
+			else {
+				shiftedNumber = number>>7 | number<<25;
+			};
+
+			break;
+		case 8:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<8 | number>>24;
+			}
+			else {
+				shiftedNumber = number>>8 | number<<24;
+			};
+
+			break;
+		case 9:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<9 | number>>23;
+			}
+			else {
+				shiftedNumber = number>>9 | number<<23;
+			};
+
+			break;
+		case 10:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<10 | number>>22;
+			}
+			else {
+				shiftedNumber = number>>10 | number<<22;
+			};
+
+			break;
+		case 11:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<11 | number>>21;
+			}
+			else {
+				shiftedNumber = number>>11 | number<<21;
+			};
+
+			break;
+		case 12:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<12 | number>>20;
+			}
+			else {
+				shiftedNumber = number>>12 | number<<20;
+			};
+
+			break;
+		case 13:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<13 | number>>19;
+			}
+			else {
+				shiftedNumber = number>>13 | number<<19;
+			};
+
+			break;
+		case 14:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<14 | number>>18;
+			}
+			else {
+				shiftedNumber = number>>14 | number<<18;
+			};
+
+			break;
+		case 15:
+			if (rotateDir == LEFT) {
+				shiftedNumber = number<<15 | number>>17;
+			}
+			else {
+				shiftedNumber = number>>15 | number<<17;
+			};
+
+			break;
+		default:
+			;  // Should not happen
+	};
+
+	return(shiftedNumber);
+};
+
+int System::readTestDefinitions(FILE *testFileRef, ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readTestDefinitions\n";}
+	char input[80];
+
+	// Start reading all NodeInterface, Node, and Link types from file
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+
+	while ((string) input != "START_OF_SYS_CONST") {
+		fscanf_s(testFileRef, "%20s", input, 80);
+	}
+
+	readSysConst(testFileRef);
+
+	while ((string) input != "START_OF_TYPES") {
+		fscanf_s(testFileRef, "%20s", input, 80);
+	}
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+		
+	while ((string) input != "END_OF_TYPES") {
+
+		if ((string) input == "T-NI:") {
+			readNodeInterfaceType(testFileRef);
+		}
+		else if ((string) input == "T-SCI:") {
+			readSwitchCoreInterfaceType(testFileRef);
+		}
+		else if ((string) input == "T-SC:") {
+			readSwitchCoreType(testFileRef);
+		}
+		else if ((string) input == "T-N:") {
+			readNodeType(testFileRef);
+		}
+		else if ((string) input == "T-LEP:") {
+			readLinkEndpointType(testFileRef);
+		}
+		else if ((string) input == "T-L:") {
+			readLinkType(testFileRef);
+		}
+		else if ((string) input == "T-C:") {
+			readClusterType(testFileRef);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "readTestDefinitions","Invalid_Type", SYS_ERR_HARD);
+			return(-1);
+		};
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+	};
+
+	logDefinitions(out);
+
+	return(0);
+};
+
+int System::runSimulation(FILE *testFileRef, ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, runSimulation\n";}
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+	unsigned int i_value_u, i_value_m, i_value_l;
+	char input[80], dot;
+	string inp;
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+
+	while ((string) input != "START_OF_SIMULATION") {
+		fscanf_s(testFileRef, "%20s", input, 80);
+	}
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+
+	out << "TESTOUT_SIMULATION:\n";
+
+	while ((string) input != "END_OF_SIMULATION" && stopSimulation == false) {
+
+		if ((string) input == "T") {
+			fscanf_s(testFileRef, "%u", &i_value_u);
+			fscanf_s(testFileRef, "%c", &dot);  // Read out the dot separation between the upper and lower part of the tickpoint value
+			fscanf_s(testFileRef, "%u", &i_value_m);
+			fscanf_s(testFileRef, "%c", &dot);  // Read out the dot separation between the upper and lower part of the tickpoint value
+			fscanf_s(testFileRef, "%u", &i_value_l);
+
+			if (i_value_u <= 17) {  // Largest value on tickPoint is 17.999999999.999999999
+				nextTickPoint.tickPoint = i_value_u;
+				nextTickPoint.tickPoint *= 1000000000000000000;
+				nextTickPoint.tickPoint += (unsigned __int64) i_value_m * 1000000000;
+				nextTickPoint.tickPoint += i_value_l;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "runSimulation", "T", SYS_ERR_HARD);
+				return(-1);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);  // Read out the colon following the time tick
+		}
+		else if ((string) input == "NOT") {  // A command line that has been commented away, read until EOCL has been found
+			
+			while ((string) input != "EOCL") {
+				fscanf_s(testFileRef, "%20s", input, 80);
+			}
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		if (tickBreakpoint[tickBreakpointIndex].tickPoint == currentTickPoint.tickPoint && tickBreakpointIndex < SYS_MAX_TICKBREAKPOINTS) {
+			cout << "  SYSTEM TICKBREAKPOINT!: " << currentTickPoint.tickPoint; cin >> inp;
+			tickBreakpointIndex++;
+		};
+
+		if (currentTickPoint.tickPoint == nextTickPoint.tickPoint) {
+			out << "T_: " << currentTickPoint.tickPoint << " ";
+			executeCommands(testFileRef, out);
+			out << ":_ET\n";
+			fscanf_s(testFileRef, "%20s", input, 80);
+		}
+
+		if (nextTickEvent != 0) {
+			this->progressTicksQueue();
+		};
+
+		chk_log_polls(out);  // Should be done before logging of traceEvents, and after commands have been executed
+
+		if (SYS_traceFile == true) {
+			this->logTraceEvents(out);
+		}
+
+		currentTickPoint.tickPoint++;
+	};
+
+	out << ":END_SIMULATION\n\n";
+	this->logErrorLog(out);
+
+	// Will only list core nodes, i.e. those created by the System, as the core nodes will list the superNodes.
+	nodeInst = lastNodeCreated;
+
+	out << "TESTOUT_NODE_LINK_LOG:\n";
+
+	while (nodeInst != 0) {
+
+//		if (nodeInst->entStatus == SYS_SYSTEM_CREATED) {
+			out << "\n";
+			out << "Node: " << nodeInst->nodeId.nickName << "\n";
+			out << nodeInst->nodeRef;
+//		}
+
+		nodeInst = nodeInst->prevInst;
+	};
+
+	// Will only list "core" links, i.e. those created by the System, as the superNodes will list the linkAbstractions.
+	linkInst = lastLinkCreated;
+
+	while (linkInst != 0) {
+
+//		if (linkInst->entStatus == SYS_SYSTEM_CREATED) {
+			out << "\n";
+			out << "Link: " << linkInst->linkId.nickName << "\n";
+			out << linkInst->linkRef;
+//		}
+
+		linkInst = linkInst->prevInst;
+	};
+
+	out << ":END_NODE_LINK_LOG\n\n";
+
+	this->logTopology(out);
+	this->logCeasedEnt(out);
+	this->logProtTrace(out);
+	return(0);
+
+};
+
+int System::readSysConst(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readSysConst\n";}
+	int i_value, i;
+	char input[80];
+	string keyboard;
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+
+	while ((string) input != "END_OF_SYS_CONST") {
+
+		if ((string) input == "SEED") {
+			fscanf_s(testFileRef, "%i", &i_value);
+			seed = i_value;
+		}
+		else if ((string) input == "TICKSRESOLUTION") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value <= 18) {  // Largest value is 18, i.e. the resolution can't be more coarse than a 1 second
+				TICKS_RESOLUTION = 1;
+
+				for (i = 0; i < i_value; i++) {
+					TICKS_RESOLUTION *= 10;
+				}
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "readSysConst", "TICKSRESOLUTION_out_of_range", SYS_ERR_HARD);
+				return(-1);
+			};
+
+		}
+		else if ((string) input == "ROLL_ERRORLOG") {
+			fscanf_s(testFileRef, "%i", &i_value);
+			
+			if (i_value == 0) {  // Deafult set to false
+				roll_errorLog = false;
+			}
+			else {
+				roll_errorLog = true;
+			};
+
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "readSysConst", "Unknown_SysVar", SYS_ERR_HARD);
+			return(-1);
+		};
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+	};
+
+	return(0);
+};
+
+
+int System::readNodeInterfaceType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readNodeInterfaceType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+
+	if (numberNodeInfTypes < MAX_NODEINFTYPES) {
+		// Initiate type to default values
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.genInfTraits.completionTime = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.genInfTraits.mtbf = 0;
+		// attachmentpointTraits can only be altered for the external interface!!!
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointExtTraits.flowdir = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointIntTraits.flowdir = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointExtTraits.flowdir = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointIntTraits.flowdir = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointVerTraits.flowdir = TRANCEIVER;
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointExtTraits.beacon = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointIntTraits.beacon = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointVerTraits.beacon = false;
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infExtTraits.queueRxLength = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infExtTraits.queueTxLength = MAX_PDUQUEUE_LENGTH;
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infIntTraits.queueRxLength = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infIntTraits.queueTxLength = MAX_PDUQUEUE_LENGTH;
+		nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infVerTraits.queueRxLength = nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infVerTraits.queueTxLength = 0;  // Not really used
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		nodeInterfaceType[numberNodeInfTypes].extNodeInfType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "CT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.genInfTraits.completionTime = f_value;
+			}
+			else if ((string) input == "MTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.genInfTraits.mtbf = f_value;
+			}
+			else if ((string) input == "DIR") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointExtTraits.flowdir = (DataDirection) i_value;
+			}
+			else if ((string) input == "BEACON") {
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.attPointExtTraits.beacon = true;
+			}
+			else if ((string) input == "NI_QT") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infExtTraits.queueTxLength = i_value;
+			}
+			else if ((string) input == "NI_QR") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeInterfaceType[numberNodeInfTypes].nodeInfTraits.infExtTraits.queueRxLength = i_value;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readNodeInterfaceType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberNodeInfTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readNodeInterfaceType","Maximum_Node_Interface_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readSwitchCoreInterfaceType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readSwitchCoreInterfaceType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+
+	if (numberSwitchCoreInfTypes < MAX_SWITCHCOREINFTYPES) {
+		// Initiate type to default values
+		switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.genInfTraits.completionTime = switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.genInfTraits.mtbf = 0;
+		switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.attPointTraits.flowdir = TRANCEIVER;  // attachmentpointTraits can't be altered for a switchCore interface!!!
+		switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.attPointTraits.beacon = false;
+		switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.switchCoreInfTraits.queueRxLength = switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.switchCoreInfTraits.queueTxLength = MAX_PDUQUEUE_LENGTH;
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		switchCoreInterfaceType[numberSwitchCoreInfTypes].extSwitchCoreInfType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "CT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.genInfTraits.completionTime = f_value;
+			}
+			else if ((string) input == "MTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.genInfTraits.mtbf = f_value;
+			}
+			else if ((string) input == "SCI_QT") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.switchCoreInfTraits.queueTxLength = i_value;
+			}
+			else if ((string) input == "SCI_QR") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				switchCoreInterfaceType[numberSwitchCoreInfTypes].switchCoreInfTraits.switchCoreInfTraits.queueRxLength = i_value;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readSwitchCoreInterfaceType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberSwitchCoreInfTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readSwitchCoreInterfaceType","Maximum_Switch_Core_Interface_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readSwitchCoreType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readSwitchCoreType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+	SYS_SwitchCoreInterfaceType_s *switchCoreInfType;
+
+	if (numberSwitchCoreTypes < MAX_SWITCHCORETYPES) {
+		// Initiate type to default values
+		switchCoreType[numberSwitchCoreTypes].switchCoreTraits.genSwitching.completionTime = switchCoreType[numberSwitchCoreInfTypes].switchCoreTraits.genSwitching.mtbf = 0;
+		switchCoreType[numberSwitchCoreTypes].switchCoreTraits.switching.capacity = 0;
+		switchCoreType[numberSwitchCoreTypes].switchCoreTraits.maxInf = MAX_SWITCHCOREINF;
+		switchCoreType[numberSwitchCoreTypes].switchCoreInfType = 0;
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		switchCoreType[numberSwitchCoreTypes].extSwitchCoreType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "CT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				switchCoreType[numberSwitchCoreTypes].switchCoreTraits.genSwitching.completionTime = f_value;
+			}
+			else if ((string) input == "MTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				switchCoreType[numberSwitchCoreTypes].switchCoreTraits.genSwitching.mtbf = f_value;
+			}
+			else if ((string) input == "SC_C") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				switchCoreType[numberSwitchCoreTypes].switchCoreTraits.switching.capacity = f_value;
+			}
+			else if ((string) input == "SC_MINF") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				switchCoreType[numberSwitchCoreTypes].switchCoreTraits.maxInf = i_value;
+			}
+			else if ((string) input == "T-SCI") {
+				fscanf_s(testFileRef, "%20s", input, 80);
+				switchCoreInfType = find_switchCoreInfType((string) input);
+
+				if (switchCoreInfType != 0) {
+					switchCoreType[numberSwitchCoreTypes].switchCoreInfType = switchCoreInfType;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"readSwitchCoreType","Unknown_Switch_Core_Interface_type", SYS_ERR_HARD);
+				};
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readSwitchCoreType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberSwitchCoreTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readSwitchCoreType","Maximum_Switch_Core_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readNodeType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readNodeType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+	SYS_SwitchCoreType_s *switchCoreType;
+	SYS_NodeInterfaceType_s *nodeInfType;
+	int i;
+	DomainLevel domainLevel;
+
+	if (numberNodeTypes < MAX_NODETYPES) {
+		// Initiate type to default values
+		nodeType[numberNodeTypes].nodeTraits.genMemory.completionTime = nodeType[numberNodeTypes].nodeTraits.genMemory.mtbf = 0;
+		nodeType[numberNodeTypes].nodeTraits.genProcessing.completionTime = nodeType[numberNodeTypes].nodeTraits.genProcessing.mtbf = 0;
+		nodeType[numberNodeTypes].nodeTraits.maxInf = MAX_NODEINF;
+		nodeType[numberNodeTypes].nodeTraits.memory.capacity = 0;
+		nodeType[numberNodeTypes].nodeTraits.processing.capacity = 0;
+		nodeType[numberNodeTypes].nodeTraits.domainLevel = DL_UNASSIGNED;
+		nodeType[numberNodeTypes].domainRadius = MAX_DOMAINRADIUS;
+		nodeType[numberNodeTypes].nodeTraits.mobPattern = MOB_FIXED;
+		nodeType[numberNodeTypes].switchCoreType = 0;
+		nodeType[numberNodeTypes].numberNodeInfTypes = 0;
+
+		for (i = 0; i < MAX_NODEINFTYPES; i++) {
+			nodeType[numberNodeTypes].nodeInfType[0] = 0;
+		}
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		nodeType[numberNodeTypes].extNodeType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "N_PCT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.genProcessing.completionTime = f_value;
+			}
+			else if ((string) input == "N_PMTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.genProcessing.mtbf = f_value;
+			}
+			else if ((string) input == "N_MCT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.genMemory.completionTime = f_value;
+			}
+			else if ((string) input == "N_MMTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.genMemory.mtbf = f_value;
+			}
+			else if ((string) input == "N_PC") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.processing.capacity = f_value;
+			}
+			else if ((string) input == "N_MC") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				nodeType[numberNodeTypes].nodeTraits.memory.capacity = f_value;
+			}
+			else if ((string) input == "N_DL") {
+				fscanf_s(testFileRef, "%i", &i_value);
+
+				domainLevel = (DomainLevel) i_value;
+
+				if (domainLevel >= DL_GLOBAL && domainLevel <=  DL_LOWEST) {
+					nodeType[numberNodeTypes].nodeTraits.domainLevel = domainLevel;
+				}
+			
+			}
+			else if ((string) input == "N_MOB") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeType[numberNodeTypes].nodeTraits.mobPattern = (MobilityPattern) i_value;
+			}
+			else if ((string) input == "N_MINF") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeType[numberNodeTypes].nodeTraits.maxInf = i_value;
+			}
+			else if ((string) input == "N_DR") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				nodeType[numberNodeTypes].domainRadius = i_value;
+			}
+			else if ((string) input == "T-SC") {
+				fscanf_s(testFileRef, "%20s", input, 80);
+
+				switchCoreType = find_switchCoreType((string) input);
+
+				if (switchCoreType != 0) {
+					nodeType[numberNodeTypes].switchCoreType = switchCoreType;
+					nodeType[numberNodeTypes].nodeTraits.switchCore = switchCoreType->switchCoreTraits;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"readSwitchCoreType","Unknown_Switch_Core_type", SYS_ERR_HARD);
+				};
+
+			}
+			else if ((string) input == "T-NI") {
+
+				if (nodeType[numberNodeTypes].numberNodeInfTypes < MAX_NODEINFTYPES) {
+					fscanf_s(testFileRef, "%20s", input, 80);
+
+					nodeInfType = find_nodeInfType((string) input);
+
+					if (nodeInfType != 0) {
+						nodeType[numberNodeTypes].nodeInfType[nodeType[numberNodeTypes].numberNodeInfTypes] = nodeInfType;
+						nodeType[numberNodeTypes].numberNodeInfTypes++;
+					}
+					else {
+						SYSTEM->runtimerror(&get_identity(),"readNodeType","Unknown_Node_Interface_type", SYS_ERR_HARD);
+					};
+
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"readNodeType","Maximum_Node_Interface_Types_exceeded", SYS_ERR_HARD);
+				};
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readNodeType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberNodeTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readNodeType","Maximum_Node_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readLinkEndpointType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readLinkEndpointType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+
+	if (numberLinkEndpointTypes < MAX_LINKENDPOINTTYPES) {
+		// Initiate type to default values
+		linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.genTraits.completionTime = linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.genTraits.mtbf = 0;
+		linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.attPointTraits.flowdir = TRANCEIVER;
+		linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.attPointTraits.beacon = false;
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		linkEndpointType[numberLinkEndpointTypes].extLinkEndpointType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "CT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.genTraits.completionTime = f_value;
+			}
+			else if ((string) input == "MTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.genTraits.mtbf = f_value;
+			}
+			else if ((string) input == "DIR") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.attPointTraits.flowdir = (DataDirection) i_value;
+			}
+			else if ((string) input == "BEACON") {
+				linkEndpointType[numberLinkEndpointTypes].linkEndpointTraits.attPointTraits.beacon = true;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readLinkEndpointType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberLinkEndpointTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readLinkEndpointType","Maximum_LinkEndpoint_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readLinkType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readLinkType\n";}
+	float f_value;
+	int i_value;
+	char input[80];
+	SYS_LinkEndpointType_s *linkEndpointType;
+
+	if (numberLinkTypes < MAX_LINKTYPES) {
+		// Initiate type to default/initial values
+		linkType[numberLinkTypes].linkTraits.genTransmission.completionTime = linkType[numberLinkTypes].linkTraits.genTransmission.mtbf = 0;
+		linkType[numberLinkTypes].linkTraits.length = LINK_DEFAULTLENGTH;
+		linkType[numberLinkTypes].linkTraits.maxLinkEndpoints = 0;
+		linkType[numberLinkTypes].linkTraits.transmission.bandwidth = linkType[numberLinkTypes].linkTraits.transmission.ber = 0;
+		linkType[numberLinkTypes].numberLinkEndpointTypes = 0;
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		linkType[numberLinkTypes].extLinkType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "CT") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkType[numberLinkTypes].linkTraits.genTransmission.completionTime = f_value;
+			}
+			else if ((string) input == "MTBF") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkType[numberLinkTypes].linkTraits.genTransmission.mtbf = f_value;
+			}
+			else if ((string) input == "L_B") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkType[numberLinkTypes].linkTraits.transmission.bandwidth = f_value;
+			}
+			else if ((string) input == "L_BER") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkType[numberLinkTypes].linkTraits.transmission.ber = f_value;
+			}
+			else if ((string) input == "L_MEP") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				linkType[numberLinkTypes].linkTraits.maxLinkEndpoints = i_value;
+			}
+			else if ((string) input == "L_L") {
+				fscanf_s(testFileRef, "%f", &f_value);
+				linkType[numberLinkTypes].linkTraits.length = f_value;
+			}
+			else if ((string) input == "T-LEP") {
+				fscanf_s(testFileRef, "%20s", input, 80);
+				linkEndpointType = find_linkEndpointType((string) input);
+
+				if (linkEndpointType != 0) {
+					linkType[numberLinkTypes].linkEndpointType[linkType[numberLinkTypes].numberLinkEndpointTypes] = linkEndpointType;
+					linkType[numberLinkTypes].numberLinkEndpointTypes++;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"readLinkType","Unknown_linkendpoint_type", SYS_ERR_HARD);
+				};
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readLinkType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberLinkTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readLinkType","Maximum_Link_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+int System::readClusterType(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, readClusterType\n";}
+	int i_value;
+	char input[80];
+	SYS_NodeType_s *nodeType;
+	SYS_LinkType_s *linkType;
+
+	if (numberClusterTypes < MAX_CLUSTERTYPES) {
+		// Initiate type to default values
+		clusterType[numberClusterTypes].maxClusterSize = MAX_CLUSTERSIZE;
+		clusterType[numberClusterTypes].topology = SYS_TOP_RANDOM;
+		clusterType[numberClusterTypes].clusterConnectivity = CLUSTER_CONNECTIVITY;
+		clusterType[numberClusterTypes].numberNodeTypes = clusterType[numberClusterTypes].numberLinkTypes = 0;
+		
+		fscanf_s(testFileRef, "%20s", input, 80);
+		clusterType[numberClusterTypes].extClusterType = (string) input;
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+
+		while ((string) input != "EOT") {
+
+			if ((string) input == "C_TOP") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				clusterType[numberClusterTypes].topology = (ClusterTopology) i_value;
+			}
+			else if ((string) input == "C_SIZE") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				clusterType[numberClusterTypes].maxClusterSize = i_value;
+			}
+			else if ((string) input == "C_CON") {
+				fscanf_s(testFileRef, "%i", &i_value);
+				clusterType[numberClusterTypes].clusterConnectivity = i_value;
+			}
+			else if ((string) input == "T-N") {
+				fscanf_s(testFileRef, "%s", input, 80);
+				nodeType = find_nodeType((string) input);
+
+				if (nodeType != 0) {
+					clusterType[numberClusterTypes].nodeType[clusterType[numberClusterTypes].numberNodeTypes] = nodeType;
+					clusterType[numberClusterTypes].numberNodeTypes++;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "readClusterType", "Unknown_node_type", SYS_ERR_HARD);
+					return(-1);
+				}
+
+			}
+			else if ((string) input == "T-L") {
+				fscanf_s(testFileRef, "%s", input, 80);
+				linkType = find_linkType((string) input);
+
+				if (linkType != 0) {
+					clusterType[numberClusterTypes].linkType[clusterType[numberClusterTypes].numberLinkTypes] = linkType;
+					clusterType[numberClusterTypes].numberLinkTypes++;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "readClusterType", "Unknown_link_type", SYS_ERR_HARD);
+					return(-1);
+				}
+				
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"readClusterType","Unknown_qualifier", SYS_ERR_HARD);
+			};
+
+			fscanf_s(testFileRef, "%20s", input, 80);
+		};
+
+		numberClusterTypes++;
+		return(0);
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"readClusterType","Maximum_Cluster_types_exceeded", SYS_ERR_HARD);
+		return(-1);
+	};
+
+};
+
+SYS_NodeInterfaceType_s *System::find_nodeInfType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_nodeInfType\n";}
+	SYS_NodeInterfaceType_s *nodeInfT;
+	bool typeFound;
+	int i;
+
+	nodeInfT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberNodeInfTypes && typeFound == false; i++) {
+
+		if (nodeInterfaceType[i].extNodeInfType == type) {
+			typeFound = true;
+			nodeInfT = &nodeInterfaceType[i];
+		}
+
+	};
+
+	return(nodeInfT);
+};
+
+SYS_SwitchCoreInterfaceType_s *System::find_switchCoreInfType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_switchCoreInfType\n";}
+	SYS_SwitchCoreInterfaceType_s *switchCoreInfT;
+	bool typeFound;
+	int i;
+
+	switchCoreInfT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberSwitchCoreInfTypes && typeFound == false; i++) {
+
+		if (switchCoreInterfaceType[i].extSwitchCoreInfType == type) {
+			typeFound = true;
+			switchCoreInfT = &switchCoreInterfaceType[i];
+		}
+
+	};
+
+	return(switchCoreInfT);
+};
+
+SYS_SwitchCoreType_s *System::find_switchCoreType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_switchCoreType\n";}
+	SYS_SwitchCoreType_s *switchCoreT;
+	bool typeFound;
+	int i;
+
+	switchCoreT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberSwitchCoreTypes && typeFound == false; i++) {
+
+		if (switchCoreType[i].extSwitchCoreType == type) {
+			typeFound = true;
+			switchCoreT = &switchCoreType[i];
+		}
+
+	};
+
+	return(switchCoreT);
+};
+
+SYS_NodeType_s *System::find_nodeType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_nodeType\n";}
+	SYS_NodeType_s *nodeT;
+	bool typeFound;
+	int i;
+
+	nodeT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberNodeTypes && typeFound == false; i++) {
+
+		if (nodeType[i].extNodeType == type) {
+			typeFound = true;
+			nodeT = &nodeType[i];
+		}
+
+	};
+
+	return(nodeT);
+};
+
+SYS_LinkEndpointType_s *System::find_linkEndpointType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_linkEndpointType\n";}
+	SYS_LinkEndpointType_s *linkEndpointT;
+	bool typeFound;
+	int i;
+
+	linkEndpointT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberLinkEndpointTypes && typeFound == false; i++) {
+
+		if (linkEndpointType[i].extLinkEndpointType == type) {
+			typeFound = true;
+			linkEndpointT = &linkEndpointType[i];
+		}
+
+	};
+
+	return(linkEndpointT);
+};
+
+SYS_LinkType_s *System::find_linkType(string type) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_linkType\n";}
+	SYS_LinkType_s *linkT;
+	bool typeFound;
+	int i;
+
+	linkT = 0;
+	typeFound = false;
+
+	for (i = 0; i < numberLinkTypes && typeFound == false; i++) {
+
+		if (linkType[i].extLinkType == type) {
+			typeFound = true;
+			linkT = &linkType[i];
+		}
+
+	};
+
+	return(linkT);
+};
+
+int System::executeCommands(FILE *testFileRef, ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, executeCommands\n";}
+
+	char input[80];
+	SYS_NodeInstance_s *nodeInstance;
+	SYS_LinkInstance_s *linkInstance;
+	NodeCoordinates_s nodePos;
+	int nodePollIndex;
+	Identity_s id;
+
+	fscanf_s(testFileRef, "%20s", input, 80);
+
+	while ((string) input != "EOCL") {
+
+		if ((string) input == "CR-N") {
+			nodeInstance = createNode(testFileRef);
+
+			if (nodeInstance != 0) {
+				nodePos = nodeInstance->nodeRef->get_coordinates();
+				id = nodeInstance->nodeRef->get_identity();
+				out << "C_:  Node creation: " << " Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+				out << "   Position: " << nodePos.xCoord << "." << nodePos.yCoord << "." << nodePos.zCoord;
+				out << " Number installed interfaces: " << nodeInstance->nodeRef->get_currentNumberNodeInf() << " ";
+				out << ":_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Node_can't_be_created", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "CR-L") {
+			linkInstance = createLink(testFileRef);
+
+			if (linkInstance != 0) {
+				id = linkInstance->linkRef->get_identity();
+				out << "C_: Link creation: " << " Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+				out << "   Number installed link endpoints: " << linkInstance->linkRef->get_currentNumberLinkEndpoints() << " ";
+				out << ":_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Link_can't_be_created", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "AT-L") {
+
+			linkInstance = attachLink(testFileRef);
+
+			if (linkInstance != 0) {
+				id = linkInstance->linkRef->get_identity();
+				out << "C_: Link: " << " Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name << "\n";
+				out << "    Link endpoints attached to node interfaces :_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Link_can't_be_can't_attached", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "SET-F") {
+
+			if (setTestFlags(testFileRef) == 0) {
+				out << "C_: Parameters have been set :_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Parameters_can't_be_set", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "ST-NI") {
+
+			if (startNodeInf(testFileRef) == 0) {
+				out << "C_: Node interfaces have been started :_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Node_interfaces_can't_be_started", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "SP-NI") {
+
+			if (stopNodeInf(testFileRef) == 0) {
+				out << "C_: Node interfaces have been stopped :_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Node_interfaces_can't_be_stopped", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "PO-N") {
+			nodePollIndex = pollNodeStatus(testFileRef);
+
+			if (nodePollIndex != -1) {
+				out << "C_: Node status poll has started, will end at tickpoint " << nodePoll[nodePollIndex].closePoll.tickPoint << " :_EC\n";
+			}
+			else {
+				runtimerror(&get_identity(), "executeCommands", "Polling_node_status_can't_be_started", SYS_ERR_HARD);
+			};
+
+		}
+		else if ((string) input == "EXIT") {
+			out << "C_: Exit simulation :_EC\n";
+		};
+
+		fscanf_s(testFileRef, "%20s", input, 80);
+	};
+
+	return(0);
+};
+
+SYS_NodeInstance_s *System::createNode(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, createNode\n";}
+	int i_value, i_value_x, i_value_y, i_value_z;
+	char input[80];
+	int instancePerNIType;
+	bool NITypeFound;
+	SYS_NodeType_s *nodeType;
+	Node *nodeRef;
+	NodeInterface *nodeInfRef[MAX_NODEINF];
+	SYS_NodeInstance_s *nodeInstRef;
+	NodeCoordinates_s nodePos;
+	int i, j; 
+	int NITypeIndex[MAX_NODEINFTYPES], numberNIs[MAX_NODEINFTYPES], numberNIInstances;
+	Identity_s id;
+
+	if (numberNodeInstances < MAX_NODEINSTANCES) {
+		// Node can be created
+		numberNIInstances = 0;
+
+		for (i = 0; i < MAX_NODEINFTYPES; i++) {
+			NITypeIndex[i] = -1;  // Intialize to an invalid value
+		};
+		
+		fscanf_s(testFileRef, "%s", input, 80);
+		nodeType = find_nodeType((string) input);
+
+		if (nodeType != 0) {
+			nextFreeNodeInst->NodeTypeRef = nodeType;
+			fscanf_s(testFileRef, "%s", input, 80);
+			id.nickName = (string) input;
+			fscanf_s(testFileRef, "%s", input, 80);
+
+			while ((string) input != "EOC") {
+
+				if ((string) input == "COORD") {
+					fscanf_s(testFileRef, "%i.%i.%i", &i_value_x, &i_value_y, &i_value_z);
+					nodePos.xCoord = i_value_x;
+					nodePos.yCoord = i_value_y;
+					nodePos.zCoord = i_value_z;
+				}
+				else if ((string) input == "NI") {
+					fscanf_s(testFileRef, "%s", input, 80);
+					// Check if this NI type is listed for this Node type
+
+					NITypeFound = false;
+
+					for (i = 0; nodeType->numberNodeInfTypes && NITypeFound == false; i++) {
+
+						if (nodeType->nodeInfType[i]->extNodeInfType == (string) input) {
+							NITypeFound = true;
+							fscanf_s(testFileRef, "%i", &i_value);
+							NITypeIndex[i] = i;
+							numberNIs[i] = i_value;
+							numberNIInstances += i_value;
+						}
+
+					};
+
+					if (NITypeFound == false || numberNIInstances > nodeType->nodeTraits.maxInf) { 
+						SYSTEM->runtimerror(&get_identity(),"createNode","Unknown_Node_Interface_type_or_max_number_interfaces_exceeded", SYS_ERR_HARD);
+						return(0);
+					}
+
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"createNode","Unknown_qualifier", SYS_ERR_HARD);
+				};
+
+				fscanf_s(testFileRef, "%s", input, 80);
+			};
+
+			// Create the node, node interfaces and install node interfaces
+			try {
+				nodeRef = new Node;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "createNode","allocation_failure", SYS_ERR_HARD);
+				return(0);
+			}
+
+			if (numberNIInstances == 0) {  // Apply default rule
+				instancePerNIType = (int) nodeType->nodeTraits.maxInf/nodeType->numberNodeInfTypes; // spread instances equally among node interface types
+
+				for (i = 0; i < nodeType->numberNodeInfTypes; i++) {
+					NITypeIndex[i] = i;
+					numberNIs[i] = instancePerNIType;
+				}
+
+			}
+
+
+			for (i = 0; i < numberNIInstances; i++) {
+				
+				try {
+					nodeInfRef[i] = new NodeInterface;
+				} catch (bad_alloc xa) {
+					SYSTEM->runtimerror(&get_identity(), "createNode","allocation_failure", SYS_ERR_HARD);
+					return(0);
+				}
+
+			};
+
+
+			id.type = "NODE";
+			id.type.append("_");
+			id.type += nodeType->extNodeType;
+			nodeRef->Node_init(&id, nodeType->domainRadius, 0, nodeType->nodeTraits, nodePos, 0, 0);
+			nextFreeNodeInst->nodeId = nodeRef->get_identity();
+
+			j = 0;
+
+			for (i = 0; i < numberNIInstances;) {  // Incremented below as node interfaces are instantiated
+				// Find the next NI to be instantiated
+
+				while (NITypeIndex[j] == -1) {  // Will find all occurences of nodeinterface types to be instantiated and installed
+					j++;
+				}
+
+				while (numberNIs[j] > 0) {
+					id.nickName = "-";
+					id.type = "NODEINTERFACE";
+					id.type.append("_");
+					id.type += nodeType->nodeInfType[j]->extNodeInfType;
+					nodeInfRef[i]->NodeInterface_init(&id, nodeType->nodeTraits.domainLevel, nodeRef, nodeType->nodeInfType[j]->nodeInfTraits, 0);
+					nodeRef->install_nodeInf(nodeInfRef[i]);
+					i++;
+					numberNIs[j]--;
+				};
+
+				j++;  // Increment so that while loop above starts to check on next potential index
+			};
+
+			nextFreeNodeInst->nodeRef = nodeRef;
+			nextFreeNodeInst->entStatus = SYS_SYSTEM_CREATED;
+			nextFreeNodeInst->prevInst = lastNodeCreated;
+			nextFreeNodeInst->nextInst = 0;
+
+			if (lastNodeCreated != 0) {
+				lastNodeCreated->nextInst = nextFreeNodeInst;
+			}
+
+			nodeInstRef = lastNodeCreated = nextFreeNodeInst;
+			nextFreeNodeInst = nextFreeNodeInst->nextFree;
+			numberNodeInstances++;
+
+			return(nodeInstRef);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(),"createNode","Unknown_node_type", SYS_ERR_HARD);
+			return(0);
+		}
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"createNode","Maximum Node_instances_exceeded", SYS_ERR_HARD);
+		return(0);
+	};
+
+};
+
+SYS_LinkInstance_s *System::createLink(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, createLink\n";}
+
+	int i_value;
+	char input[80];
+	int instancePerLEPType;
+	bool LEPTypeFound;
+	SYS_LinkType_s *linkType;
+	Link *linkRef;
+	LinkEndpoint *linkEndpointRef[MAX_LINKENDPOINTS];
+	SYS_LinkInstance_s *linkInstRef;
+	int i, j; 
+	int LEPTypeIndex[MAX_LINKENDPOINTTYPES], numberLEPs[MAX_LINKENDPOINTTYPES], numberLEPInstances;
+	Identity_s id;
+
+	if (numberLinkInstances < MAX_LINKINSTANCES) {
+		// Link can be created
+		numberLEPInstances = 0;
+
+		for (i = 0; i < MAX_LINKENDPOINTTYPES; i++) {
+			LEPTypeIndex[i] = -1;  // Intialize to an invalid value
+		};
+		
+		fscanf_s(testFileRef, "%s", input, 80);
+		linkType = find_linkType((string) input);
+
+		if (linkType != 0) {
+			nextFreeLinkInst->LinkTypeRef = linkType;
+			fscanf_s(testFileRef, "%s", input, 80);
+			id.nickName = (string) input;
+			fscanf_s(testFileRef, "%s", input, 80);
+
+			while ((string) input != "EOC") {
+
+				if ((string) input == "LEP") {
+					fscanf_s(testFileRef, "%s", input, 80);
+					// Check if this link endpoint type is listed for this Link type
+
+					LEPTypeFound = false;
+
+					for (i = 0; linkType->numberLinkEndpointTypes && LEPTypeFound == false; i++) {
+
+						if (linkType->linkEndpointType[i]->extLinkEndpointType == (string) input) {
+							LEPTypeFound = true;
+							fscanf_s(testFileRef, "%i", &i_value);
+							LEPTypeIndex[i] = i;
+							numberLEPs[i] = i_value;
+							numberLEPInstances += i_value;
+						}
+
+					};
+
+					if (LEPTypeFound == false || numberLEPInstances > linkType->linkTraits.maxLinkEndpoints) { 
+						SYSTEM->runtimerror(&get_identity(),"createLink","Unknown_link_endpoint_type_or_max_number_link_endpoints_exceeded", SYS_ERR_HARD);
+						return(0);
+					}
+
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"createLink","Unknown_qualifier", SYS_ERR_HARD);
+				};
+
+				fscanf_s(testFileRef, "%s", input, 80);
+			};
+
+			// Create the link and the link endpoints, and add the link endpoints to the link
+			try {
+				linkRef = new Link;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "createLink","allocation_failure", SYS_ERR_HARD);
+				return(0);
+			}
+
+			if (numberLEPInstances == 0) {  // Apply default rule
+				instancePerLEPType = (int) linkType->linkTraits.maxLinkEndpoints/linkType->numberLinkEndpointTypes; // spread instances equally among link endpoint types
+
+				for (i = 0; i < linkType->numberLinkEndpointTypes; i++) {
+					LEPTypeIndex[i] = i;
+					numberLEPs[i] = instancePerLEPType;
+				}
+
+			}
+
+
+			for (i = 0; i < numberLEPInstances; i++) {
+				
+				try {
+					linkEndpointRef[i] = new LinkEndpoint;
+				} catch (bad_alloc xa) {
+					SYSTEM->runtimerror(&get_identity(), "createLink","allocation_failure", SYS_ERR_HARD);
+					return(0);
+				}
+
+			};
+
+			id.type = "LINK";
+			id.type.append("_");
+			id.type += linkType->extLinkType;
+			linkRef->Link_init(&id, true, linkType->linkTraits, 0, 0);
+			nextFreeLinkInst->linkId = linkRef->get_identity();
+
+			j = 0;
+
+			for (i = 0; i < numberLEPInstances;) {  // Incremented below as link endpoints are instantiated
+				// Find the next LEP to be instantiated
+
+				while (LEPTypeIndex[j] == -1) {  // Will find all occurences of link endpoint types to be instantiated and installed
+					j++;
+				}
+
+				while (numberLEPs[j] > 0) {
+					id.nickName = "-";
+					id.type = "LINKENDPOINT";
+					id.type.append("_");
+					id.type += linkType->linkEndpointType[j]->extLinkEndpointType;
+					linkEndpointRef[i]->LinkEndpoint_init(&id, linkType->linkEndpointType[j]->linkEndpointTraits, 0);
+					linkRef->add_linkEndpoint(linkEndpointRef[i]);
+					i++;
+					numberLEPs[j]--;
+				};
+
+				j++;  // Increment so that wihile loop above starts to check on next potential index
+			};
+
+			nextFreeLinkInst->linkRef = linkRef;
+			nextFreeLinkInst->entStatus = SYS_SYSTEM_CREATED;
+			nextFreeLinkInst->prevInst = lastLinkCreated;
+			nextFreeLinkInst->nextInst = 0;
+
+			if (lastLinkCreated != 0) {
+				lastLinkCreated->nextInst = nextFreeLinkInst;
+			}
+
+			linkInstRef = lastLinkCreated = nextFreeLinkInst;
+			nextFreeLinkInst = nextFreeLinkInst->nextFree;
+			numberLinkInstances++;
+
+			return(linkInstRef);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(),"createLink","Unknown_link_type", SYS_ERR_HARD);
+			return(0);
+		}
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"createLink","Maximum_Link_instances_exceeded", SYS_ERR_HARD);
+		return(0);
+	};
+
+};
+
+SYS_LinkInstance_s *System::attachLink(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, attachLink\n";}
+	char input[80];
+	bool LEPTypeFound, NITypeFound, nodeRefFound;
+	LinkEndpoint *linkEndpointRef;
+	NodeInterface *nodeInf;
+	SYS_LinkInstance_s *linkInstRef;
+	SYS_NodeInstance_s *nodeInstRef;
+	int i, j, numberLinkEndpoints, numberNodeInf; 
+
+	fscanf_s(testFileRef, "%s", input, 80);
+	linkInstRef = find_linkInst((string) input, 0);
+
+	if (linkInstRef != 0) {
+
+		LEPTypeFound = NITypeFound = nodeRefFound = false;
+		numberLinkEndpoints = linkInstRef->linkRef->get_currentNumberLinkEndpoints();
+		fscanf_s(testFileRef, "%s", input, 80);
+
+		while ((string) input != "EOC") {
+
+			if ((string) input == "LEP") {
+				fscanf_s(testFileRef, "%s", input, 80);
+				// Check if this link endpoint type is listed among installed link endpoints
+
+				for (i = 0;  i < numberLinkEndpoints && LEPTypeFound == false; i++) {
+					linkEndpointRef = linkInstRef->linkRef->get_nextLinkEndpoint(false);
+
+					if (linkEndpointRef->get_identity().type.find((string) input) != string::npos) {
+
+						if (linkInstRef->linkRef->isLinkEndpoint_attached(linkEndpointRef) == false) {
+							LEPTypeFound = true;
+							linkInstRef->linkRef->get_nextLinkEndpoint(true);
+						}
+
+					};
+
+				};
+
+			}
+			else if ((string) input == "N") {
+				fscanf_s(testFileRef, "%s", input, 80);
+				// Check if this node instance is listed
+
+				nodeInstRef = this->find_nodeInst((string) input, 0);
+
+				if (nodeInstRef != 0) {
+					nodeRefFound = true;
+				}
+			}
+			else if ((string) input == "NI") {
+				fscanf_s(testFileRef, "%s", input, 80);
+				numberNodeInf = nodeInstRef->nodeRef->get_currentNumberNodeInf();
+
+				for (j = 0; j < numberNodeInf && NITypeFound == false; j++) {
+					nodeInf = nodeInstRef->nodeRef->getNext_nodeInterface(false);
+
+					if (nodeInf->get_identity().type.find((string) input) != string::npos) {
+
+						if (nodeInf->isExtLinkAttached().link == 0) {
+							NITypeFound = true;
+							nodeInstRef->nodeRef->getNext_nodeInterface(true);
+						}
+
+					}
+
+				};  // ENDFOR numberNodeInf
+
+				nodeInstRef->nodeRef->getNext_nodeInterface(true);
+
+				if (LEPTypeFound == true && nodeRefFound == true && NITypeFound == true) {
+					nodeInstRef->nodeRef->attach_extLink(nodeInf, linkInstRef->linkRef, linkEndpointRef);
+					LEPTypeFound = NITypeFound = nodeRefFound = false;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(),"attachLink","Parsing_error", SYS_ERR_HARD);
+					return(0);
+				};
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(),"attachLink","Unknown_qualifier", SYS_ERR_HARD);
+				return(0);
+			};
+
+			fscanf_s(testFileRef, "%s", input, 80);
+		};  // ENDWHILE "EOC"
+
+	}
+	else {
+		SYSTEM->runtimerror(&get_identity(),"attachLink","Unknown_link", SYS_ERR_HARD);
+		return(0);
+	};  // ENDIF linkInstRef
+
+	return(linkInstRef);
+};
+
+
+int System::setTestFlags(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, setTestParameters\n";}
+	char input[80];
+	int i_value;
+
+	fscanf_s(testFileRef, "%s", input, 80);
+
+	while ((string) input != "EOC") {
+
+		if ((string) input == "breakOnError") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value >= 0 && i_value <= 3) {  // Default set to false
+				SYS_breakOnError = (SYS_BreakOnError) i_value;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "setTestParameters", "Invalid_testFlag_value", SYS_ERR_HARD);
+				return(-1);
+			};
+
+		}
+		else if ((string) input == "threadTrace") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_threadTrace = true;
+			}
+			else {
+				SYS_threadTrace = false;
+			};
+
+		}
+		else if ((string) input == "funcTrace") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_funcTrace = true;
+			}
+			else {
+				SYS_funcTrace = false;
+			};
+
+		}
+		else if ((string) input == "eventTrace") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_eventTrace = true;
+			}
+			else {
+				SYS_eventTrace = false;
+			};
+
+		}
+		else if ((string) input == "funcSysTrace") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_funcSysTrace = true;
+			}
+			else {
+				SYS_funcSysTrace = false;
+			};
+
+		}
+		else if ((string) input == "traceFile") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_traceFile = true;
+			}
+			else {
+				SYS_traceFile = false;
+			};
+
+		}
+		else if ((string) input == "deleteObjects") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_deleteObjects = true;
+			}
+			else {
+				SYS_deleteObjects = false;
+			};
+		}
+		else if ((string) input == "protTrace") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value == 1) {  // Default set to false
+				SYS_protTrace = true;
+			}
+			else {
+				SYS_protTrace = false;
+			};
+
+		}
+		else if ((string) input == "logLevel") {
+			fscanf_s(testFileRef, "%i", &i_value);
+
+			if (i_value >= 0 && i_value <= 3) {
+				logLevel = (SYS_LogLevel) i_value;
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "setTestParameters", "Invalid_testFlag_value", SYS_ERR_HARD);
+				return(-1);
+			};
+
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "setTestParameters", "Unknown_parameter", SYS_ERR_HARD);
+			return(-1);
+		};
+
+		fscanf_s(testFileRef, "%s", input, 80);
+	};  // ENDWHILE EOC
+
+	return(0);
+};
+
+int System::startNodeInf(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, startNodeInf\n";}
+	char input[80];
+	int i_value, i;
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+	NodeInterface *nodeInf;
+
+	fscanf_s(testFileRef, "%s", input, 80);
+
+	while ((string) input != "EOC") {
+		nodeInst = this->find_nodeInst((string) input, 0);
+		
+		if (nodeInst != 0) {
+			fscanf_s(testFileRef, "%s", input, 80);
+
+			if ((string) input == "NI") {
+				fscanf_s(testFileRef, "%i", &i_value);
+
+				if (i_value <= nodeInst->nodeRef->get_currentNumberNodeInf()) {  // Stop a number of interfaces as indicated
+
+					if (i_value == 0) {  // Start all interfaces
+						i_value = nodeInst->nodeRef->get_currentNumberNodeInf();
+					}
+
+					for (i = 0; i < i_value; i++) {
+						nodeInf = nodeInst->nodeRef->getNext_nodeInterface(false);
+						nodeInf->start_extInterface();
+					}
+
+					nodeInst->nodeRef->getNext_nodeInterface(true);
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "startNodeInf", "Too_many_node_interfaces_specified", SYS_ERR_HARD);
+					return(-1);
+				};
+
+			}
+			else if ((string) input == "L") {  // Find the node interface to which this link is attached
+				fscanf_s(testFileRef, "%s", input, 80);
+				linkInst = this->find_linkInst((string) input, 0);
+
+				if (linkInst != 0) {
+					nodeInf = nodeInst->nodeRef->get_nodeInterface(&linkInst->linkRef->get_identity(), 0);
+
+					if (nodeInf != 0) {
+						nodeInf->start_extInterface();
+					}
+					else {
+						SYSTEM->runtimerror(&get_identity(), "startNodeInf", "Link_not_attached", SYS_ERR_SOFT);
+						return(0);
+					};
+
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "startNodeInf", "Unknown_link", SYS_ERR_HARD);
+					return(-1);
+				};
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "startNodeInf", "Invalid_parameter", SYS_ERR_HARD);
+				return(-1);
+			};
+
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "startNodeInf", "Unknown_node", SYS_ERR_HARD);
+			return(-1);
+		};
+
+		fscanf_s(testFileRef, "%s", input, 80);
+	};  // ENDWHILE EOC
+
+	return(0);
+};
+
+int System::stopNodeInf(FILE *testFileRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, stopNodeInf\n";}
+	char input[80];
+	int i_value, i;
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+	NodeInterface *nodeInf;
+
+	// The format of this command is either SP-NI NodeName NI *, or SP-NI NodeName L LinkName. The former will stop a number of interfaces (*) pr stop the interface to which the named link is attached.
+	fscanf_s(testFileRef, "%s", input, 80);
+
+	while ((string) input != "EOC") {
+		nodeInst = this->find_nodeInst((string) input, 0);
+		
+		if (nodeInst != 0) {
+			fscanf_s(testFileRef, "%s", input, 80);
+
+			if ((string) input == "NI") {
+				fscanf_s(testFileRef, "%i", &i_value);
+
+				if (i_value <= nodeInst->nodeRef->get_currentNumberNodeInf()) {  // Stop a number of interfaces as indicated
+
+					if (i_value == 0) {  // Stop all interfaces
+						i_value = nodeInst->nodeRef->get_currentNumberNodeInf();
+					}
+
+					for (i = 0; i < i_value; i++) {
+						nodeInf = nodeInst->nodeRef->getNext_nodeInterface(false);
+						nodeInf->stop_extInterface();
+					}
+
+					nodeInst->nodeRef->getNext_nodeInterface(true);
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "stopeNodeInf", "Too_many_node_interfaces_specified", SYS_ERR_HARD);
+					return(-1);
+				};
+
+			}
+			else if ((string) input == "L") {  // Find the node interface to which this link is attached
+				fscanf_s(testFileRef, "%s", input, 80);
+				linkInst = this->find_linkInst((string) input, 0);
+
+				if (linkInst != 0) {
+					nodeInf = nodeInst->nodeRef->get_nodeInterface(&linkInst->linkRef->get_identity(), 0);
+
+					if (nodeInf != 0) {
+						nodeInf->stop_extInterface();
+					}
+					else {
+						SYSTEM->runtimerror(&get_identity(), "stopNodeInf", "Link_not_attached", SYS_ERR_SOFT);
+						return(0);
+					};
+
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "stopNodeInf", "Unknown_link", SYS_ERR_HARD);
+					return(-1);
+				};
+				
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "stopNodeInf", "Invalid_parameter", SYS_ERR_HARD);
+				return(-1);
+			};
+
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "stopNodeInf", "Unknown_node", SYS_ERR_HARD);
+			return(-1);
+		};
+
+		fscanf_s(testFileRef, "%s", input, 80);
+	};  // ENDWHILE EOC
+
+	return(0);
+};
+
+int System::pollNodeStatus(FILE *testFileRef) {  // Returns index to the node poll list if there is one available
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, pollNodeStatus\n";}
+	SYS_NodeInstance_s *nodeInst;
+	char input[80];
+	bool pollListFound;
+	int i, j, i_val;
+
+	// Find an empty poll list first
+	pollListFound = false;
+	i = 0;
+
+	while (i < SYS_MAX_POLLS && pollListFound == false) {
+
+		if (nodePoll[i].closePoll.tickPoint == 0) {
+			pollListFound = true;
+		}
+		else {
+			i++;
+		};
+
+	}
+
+	if (pollListFound == true) {
+		nodePoll[i].startPoll.tickPoint = getTicks().tickPoint;
+
+		// First read out name of the poll
+		fscanf_s(testFileRef, "%s", input, 80);
+		nodePoll[i].pollName = (string) input;
+
+		// Then read out the list of nodes to be polled, the name can be either an external name in case of core nodes or a nickname in case of supernodes
+		fscanf_s(testFileRef, "%s", input, 80);
+		j = 0;
+
+		while ((string) input != "SCHED" && (string) input != "EVENT") {
+			// Find the node instance for each node listed and save it to the next empty poll list
+			nodeInst = this->find_nodeInst((string) input, 0);
+
+			if (nodeInst != 0) {
+
+				if (j < SYS_MAX_POLLNODES) {
+					nodePoll[i].nodeRef[j] = nodeInst->nodeRef;
+					j++;
+				}
+				else {
+					SYSTEM->runtimerror(&get_identity(), "pollNodeStatus", "Max_nodes_exceeded", SYS_ERR_SOFT);
+					return(-1);
+				};
+
+			}
+			else {
+				SYSTEM->runtimerror(&get_identity(), "pollNodeStatus", "Unknown_node", SYS_ERR_SOFT);
+				return(-1);
+			};
+
+			fscanf_s(testFileRef, "%s", input, 80);
+		}
+
+		// Check if poll is scheduled and if yes save poll frequency
+		if ((string) input == "SCHED") {
+			fscanf_s(testFileRef, "%i", &i_val);
+			nodePoll[i].pollFrequency.tickPoint = i_val;
+			nodePoll[i].nextPoll.tickPoint = getTicks().tickPoint;  // Shall start right from this point
+		}
+		else {
+			// Save current position for reading out the traceEvent list
+			nodePoll[i].loggedTraceTailCopy = loggedTraceTail;
+		};
+
+
+		// Read out when poll is to stop
+		fscanf_s(testFileRef, "%i", &i_val);
+		nodePoll[i].closePoll.tickPoint = getTicks().tickPoint + i_val;
+
+		// Read out "EOC"
+		fscanf_s(testFileRef, "%s", input, 80);
+	}
+	else {  // No available node polls
+		// Read out until "EOC" and report error
+		fscanf_s(testFileRef, "%s", input, 80);
+
+		while ((string) input != "EOC") {
+			fscanf_s(testFileRef, "%s", input, 80);
+		}
+
+		SYSTEM->runtimerror(&get_identity(), "pollNodeStatus", "Max_node_polls_exceeded", SYS_ERR_SOFT);
+		return(-1);
+	};
+
+	return(i);
+};
+
+
+string System::find_nodeExtName(Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_nodeExtName\n";}
+	SYS_NodeInstance_s *nodeInst;
+
+	nodeInst = find_nodeInst("-", id);
+
+	if (nodeInst != 0) {
+		return(nodeInst->nodeId.nickName);
+	}
+	else {
+		return("-");
+	};
+
+};
+
+SYS_NodeInstance_s *System::find_nodeInst(string extName, Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_nodeInst\n";}
+	bool nodeInstFound;
+	SYS_NodeInstance_s *nodeInst;
+
+	nodeInstFound = false;
+	nodeInst = lastNodeCreated;
+
+	while (nodeInst != 0 && nodeInstFound == false) {
+
+		if (id != 0) { // Only use this as a key to find node, search either based on name (if valid) or nickname
+
+			if (globalNameSpace->check_ifValid(id->name) == true) {
+				
+				if (globalNameSpace->check_ifEqual(nodeInst->nodeRef->get_identity().name, id->name) == true) {
+					nodeInstFound = true;
+				}
+				else {
+					nodeInst = nodeInst->prevInst;
+				};
+
+			}
+			else {  // NB! Shall really only be used to search for supernodes
+
+				if (id->nickName == nodeInst->nodeRef->get_identity().nickName) {
+					nodeInstFound = true;
+				}
+				else {
+					nodeInst = nodeInst->prevInst;
+				};
+
+			};
+
+		}
+		else {
+
+			if (nodeInst->nodeId.nickName == extName) {
+				nodeInstFound = true;
+			}
+			else {
+				nodeInst = nodeInst->prevInst;
+			};
+
+		};
+
+	};
+
+	return(nodeInst);
+};
+
+NodeInfo_s *System::get_nodeInfo(Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, get_nodeInfo\n";}
+	SYS_NodeInstance_s *nodeInst;
+	NodeInfo_s *nodeInfo;
+	int i;
+	bool entFound;
+	nodeInst = this->find_nodeInst("-", id);
+
+	if (nodeInst == 0) {
+		// Check in the ceasedEnt list
+		nodeInfo = 0;
+		entFound = false;
+		i = 0;
+
+		while (entFound == false && i < lastCeasedEnt) {
+
+			if (globalNameSpace->check_ifEqual(id->name, ceasedEnt[i].id.name) == true) {
+				entFound = true;
+			}
+			else {
+				i++;
+			};
+
+		}
+		
+		nodeInfo = &ceasedEnt[i].nodeInfo;
+	}
+	else {
+		nodeInfo = nodeInst->nodeRef->get_myNodeInfo();
+	};
+
+	return(nodeInfo);
+};
+
+LinkInfo_s *System::get_linkInfo(Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, get_linkInfo\n";}
+	SYS_LinkInstance_s *linkInst;
+	LinkInfo_s *linkInfo;
+	int i;
+	bool entFound;
+	linkInst = this->find_linkInst("-", id);
+
+	if (linkInst == 0) {
+		// Check in the ceasedEnt list
+		linkInfo = 0;
+		entFound = false;
+		i = 0;
+
+		while (entFound == false && i < lastCeasedEnt) {
+
+			if (globalNameSpace->check_ifEqual(id->name, ceasedEnt[i].id.name) == true) {
+				entFound = true;
+			}
+			else {
+				i++;
+			};
+
+		}
+		
+		linkInfo = &ceasedEnt[i].linkInfo;
+	}
+	else {
+		linkInfo = linkInst->linkRef->get_myLinkInfo();
+	};
+
+	return(linkInfo);
+};
+
+string System::find_linkExtName(Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_linkExtName\n";}
+	SYS_LinkInstance_s *linkInst;
+
+	linkInst = find_linkInst("-", id);
+
+	if (linkInst != 0) {
+		return(linkInst->linkId.nickName);
+	}
+	else {
+		return("-");
+	};
+
+};
+
+SYS_LinkInstance_s *System::find_linkInst(string extName, Identity_s *id) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, find_linkInst\n";}
+	bool linkInstFound;
+	SYS_LinkInstance_s *linkInst;
+
+	linkInstFound = false;
+	linkInst = lastLinkCreated;
+
+	while (linkInst != 0 && linkInstFound == false) {
+
+		if (id != 0) { // Only use this as a key to find link
+
+			if (globalNameSpace->check_ifEqual(linkInst->linkRef->get_identity().name, id->name) == true) {
+				linkInstFound = true;
+			}
+			else {
+				linkInst = linkInst->prevInst;
+			};
+
+		}
+		else {
+
+			if (linkInst->linkId.nickName == extName) {
+				linkInstFound = true;
+			}
+			else {
+				linkInst = linkInst->prevInst;
+			};
+
+		};
+
+	};
+
+	return(linkInst);
+};
+
+int System::report_entityCreation(Identity_s *origId, Identity_s *id, Entity *entRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, report_entityCreation\n";}
+
+	if (nextFreeNodeInst != 0 && nextFreeLinkInst != 0) {
+
+		if (id->type == "NODE") {
+			nextFreeNodeInst->NodeTypeRef = 0;
+			nextFreeNodeInst->nodeRef = (Node *) entRef;
+			nextFreeNodeInst->entStatus = SYS_NW_CREATED;
+			nextFreeNodeInst->prevInst = lastNodeCreated;
+			nextFreeNodeInst->nextInst = 0;
+
+			if (lastNodeCreated != 0) {
+				lastNodeCreated->nextInst = nextFreeNodeInst;
+			}
+	
+			lastNodeCreated = nextFreeNodeInst;
+			nextFreeNodeInst = nextFreeNodeInst->nextFree;
+			numberNodeInstances++;
+
+			if (SYS_eventTrace == true) { 
+				Identity_s idArray[2]; 
+				idArray[0] = *id;
+				idArray[1].type = "-";
+				this->eventTrace(&get_identity(), origId, SYS_LL_HIGH, "Report_of_node_creation", 0, 0, 0, idArray);
+			}
+			else {
+				cout << "T: " << currentTickPoint.tickPoint << " Report_of_node_creation,_reported_by_node: " << origId->name.name << " Type: " << id->type << " Nickname: " << id->nickName << " Name: " << id->name.name << "\n";
+			};
+
+		}
+		else if (id->type == "LINK") {
+			nextFreeLinkInst->LinkTypeRef = 0;
+			nextFreeLinkInst->linkRef = (Link *) entRef;
+			nextFreeLinkInst->entStatus = SYS_NW_CREATED;
+			nextFreeLinkInst->prevInst = lastLinkCreated;
+			nextFreeLinkInst->nextInst = 0;
+
+			if (lastLinkCreated != 0) {
+				lastLinkCreated->nextInst = nextFreeLinkInst;
+			}
+
+			lastLinkCreated = nextFreeLinkInst;
+			nextFreeLinkInst = nextFreeLinkInst->nextFree;
+			numberLinkInstances++;
+
+			if (SYS_eventTrace == true) { 
+				Identity_s idArray[2]; 
+				idArray[0] = *id;
+				idArray[1].type = "-";
+				this->eventTrace(&get_identity(), origId, SYS_LL_HIGH, "Report_of_link_creation", 0, 0, 0, idArray);
+			}
+			else {
+				cout << "T: " << currentTickPoint.tickPoint << " Report_of_link_creation,_reported_by_node: " << origId->name.name << " Type: " << id->type << " Nickname: " << id->nickName << " Name: " << id->name.name << "\n";
+			};
+
+		}
+		else {
+			runtimerror(&get_identity(), "report_entityCreation", "Invalid_Entity type", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		runtimerror(&get_identity(), "report_entityCreation", "No_more_free_node/link_instances", SYS_ERR_HARD);
+		return(-1);
+	};
+
+	return(0);
+};
+
+int System::report_entityDeletion(Identity_s *origId, Identity_s *id, NodeInfo_s *nodeInfo, LinkInfo_s *linkInfo) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, report_entityDeletion\n";}
+	bool entFound;
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+
+	entFound = false;
+
+	if (id->type == "NODE") {
+		nodeInst = lastNodeCreated;
+
+		while (nodeInst != 0 && entFound == false) {
+
+			if (globalNameSpace->check_ifEqual(id->name, nodeInst->nodeRef->get_identity().name) == true) {
+				entFound = true;
+			}
+			else {
+				nodeInst = nodeInst->prevInst;
+			};
+
+		};
+
+		if (entFound == true) {
+			// Save in the deceased list
+			ceasedEnt[lastCeasedEnt].id = *id;
+			ceasedEnt[lastCeasedEnt].nodeInfo = *nodeInfo;
+			lastCeasedEnt++;
+
+			if (nodeInst->prevInst == 0) {  // First node instance, this case should never really happen!!!
+				
+				if (nodeInst->nextInst != 0) {  // There is at least one other node instance
+					nodeInst->nextInst->prevInst = 0;
+					nodeInst->nextFree = nextFreeNodeInst;
+					nextFreeNodeInst = nodeInst;
+				}
+				else {  // All node instances are gone;
+					nodeInst->nextFree = nextFreeNodeInst;
+					nextFreeNodeInst = nodeInst;
+					lastNodeCreated = 0;
+				};
+
+			}
+			else if (nodeInst->nextInst == 0) {  // Last node instance
+				nodeInst->prevInst->nextInst = 0;
+				nodeInst->nextFree = nextFreeNodeInst;
+				nextFreeNodeInst = nodeInst;
+				lastNodeCreated = nodeInst->prevInst;
+			}
+			else {  // Somewhere inbetween
+				nodeInst->prevInst->nextInst = nodeInst->nextInst;
+				nodeInst->nextInst->prevInst = nodeInst->prevInst;
+				nodeInst->nextFree = nextFreeNodeInst;
+				nextFreeNodeInst = nodeInst;
+			};
+
+			numberNodeInstances--;
+
+			if (SYS_eventTrace == true) { 
+				Identity_s idArray[2]; 
+				idArray[0] = *id;
+				idArray[1].type = "-";
+				this->eventTrace(&get_identity(), origId, SYS_LL_HIGH, "Report_of_node_deletion", 0, 0, 0, idArray);
+			}
+			else {
+				cout << "T: " << currentTickPoint.tickPoint << " Report_of_node_deletion,_reported_by_node: " << origId->name.name << " Type: " << id->type << " Nickname: " << id->nickName << " Name: " << id->name.name << "\n";
+			};
+
+		}
+		else {
+			runtimerror(&get_identity(), "report_entityDeletion", "Node_instance_not_found", SYS_ERR_HARD);
+			return(-1);
+		}; // entFound == true
+
+	}
+	else if (id->type == "LINK") {
+		linkInst = lastLinkCreated;
+
+		while (linkInst != 0 && entFound == false) {
+
+			if (globalNameSpace->check_ifEqual(id->name, linkInst->linkRef->get_identity().name) == true) {
+				entFound = true;
+			}
+			else {
+				linkInst = linkInst->prevInst;
+			};
+
+		};
+
+		if (entFound == true) {
+			// Save in the deceased list
+			ceasedEnt[lastCeasedEnt].id = *id;
+			ceasedEnt[lastCeasedEnt].linkInfo = *linkInfo;
+			lastCeasedEnt++;
+
+			if (linkInst->prevInst == 0) {  // First link instance, this case should never really happen!!!
+				
+				if (linkInst->nextInst != 0) {  // There is at least one other link instance
+					linkInst->nextInst->prevInst = 0;
+					linkInst->nextFree = nextFreeLinkInst;
+					nextFreeLinkInst = linkInst;
+				}
+				else {  // All link instances are gone;
+					linkInst->nextFree = nextFreeLinkInst;
+					nextFreeLinkInst = linkInst;
+					lastLinkCreated = 0;
+				};
+
+			}
+			else if (linkInst->nextInst == 0) {  // Last link instance
+				linkInst->prevInst->nextInst = 0;
+				linkInst->nextFree = nextFreeLinkInst;
+				nextFreeLinkInst = linkInst;
+				lastLinkCreated = linkInst->prevInst;
+			}
+			else {  // Somewhere inbetween
+				linkInst->prevInst->nextInst = linkInst->nextInst;
+				linkInst->nextInst->prevInst = linkInst->prevInst;
+				linkInst->nextFree = nextFreeLinkInst;
+				nextFreeLinkInst = linkInst;
+			};
+
+			numberLinkInstances--;
+
+			if (SYS_eventTrace == true) { 
+				Identity_s idArray[2]; 
+				idArray[0] = *id;
+				idArray[1].type = "-";
+				this->eventTrace(&get_identity(), origId, SYS_LL_HIGH, "Report_of_link_deletion", 0, 0, 0, idArray);
+			}
+			else {
+				cout << "T: " << currentTickPoint.tickPoint << " Report_of_link_deletion,_reported_by_node: " << origId->name.name << " Type: " << id->type << " Nickname: " << id->nickName << " Name: " << id->name.name << "\n";
+			};
+
+		}
+		else {
+			runtimerror(&get_identity(), "report_entityDeletion", "Link_instance_not_found", SYS_ERR_HARD);
+			return(-1);
+		}; // entFound == true
+
+	}
+	else {
+		runtimerror(&get_identity(), "report_entityDeletion", "Invalid_Entity_type", SYS_ERR_HARD);
+		return(-1);
+	};
+
+	if (lastCeasedEnt == MAX_CEASEDLIST) {
+		runtimerror(&get_identity(), "report_entityDeletion", "Ceased_entity_list_is_full", SYS_ERR_HARD);
+		return(-1);
+	}
+
+	return(0);
+};
+
+int System::req_entityDeletion(Identity_s *id, Entity *entRef) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, req_entityDeletion\n";}
+	bool entFound;
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+
+	if (SYS_deleteObjects == true) {  // Delete the entity, otherwise just report
+		entFound = false;
+
+		if (id->type == "NODE") {
+			nodeInst = lastNodeCreated;
+	
+			while (nodeInst != 0 && entFound == false) {
+
+				if (globalNameSpace->check_ifEqual(id->name, nodeInst->nodeRef->get_identity().name) == true) {
+					entFound = true;
+				}
+				else {
+					nodeInst = nodeInst->prevInst;
+				};
+
+			};
+	
+			if (entFound == true) {
+				// Save in the deceased list
+				ceasedEnt[lastCeasedEnt].id = *id;
+				ceasedEnt[lastCeasedEnt].nodeInfo = *nodeInst->nodeRef->get_myNodeInfo();
+				lastCeasedEnt++;
+
+				nodeInst->nodeRef->Node_delete();
+				this->remove_fromNodePolls(nodeInst->nodeRef);
+				delete nodeInst->nodeRef;
+
+				if (nodeInst->prevInst == 0) {  // First node instance, this case should never really happen!!!
+				
+					if (nodeInst->nextInst != 0) {  // There is at least one other node instance
+						nodeInst->nextInst->prevInst = 0;
+						nodeInst->nextFree = nextFreeNodeInst;
+						nextFreeNodeInst = nodeInst;
+					}
+					else {  // All node instances are gone;
+						nodeInst->nextFree = nextFreeNodeInst;
+						nextFreeNodeInst = nodeInst;
+						lastNodeCreated = 0;
+					};
+
+				}
+				else if (nodeInst->nextInst == 0) {  // Last node instance
+					nodeInst->prevInst->nextInst = 0;
+					nodeInst->nextFree = nextFreeNodeInst;
+					nextFreeNodeInst = nodeInst;
+					lastNodeCreated = nodeInst->prevInst;
+				}
+				else {  // Somewhere inbetween
+					nodeInst->prevInst->nextInst = nodeInst->nextInst;
+					nodeInst->nextInst->prevInst = nodeInst->prevInst;
+					nodeInst->nextFree = nextFreeNodeInst;
+					nextFreeNodeInst = nodeInst;
+				};
+
+				numberNodeInstances--;
+				if (SYS_eventTrace == true) { this->eventTrace(&get_identity(), id, SYS_LL_MEDIUM, "Request_of_node_deletion_(executed)", 0, 0, 0, 0);} 
+			}
+			else {
+				runtimerror(&get_identity(), "req_entityDeletion", "Entity_instance_not_found", SYS_ERR_HARD);
+				return(-1);
+			}; // entFound == true
+
+		}
+		else if (id->type == "LINK") {
+			linkInst = lastLinkCreated;
+
+			while (linkInst != 0 && entFound == false) {
+
+				if (globalNameSpace->check_ifEqual(id->name, linkInst->linkRef->get_identity().name) == true) {
+					entFound = true;
+				}
+				else {
+					linkInst = linkInst->prevInst;
+				};
+
+			};
+
+			if (entFound == true) {
+				// Save in the deceased list
+				ceasedEnt[lastCeasedEnt].id = *id;
+				ceasedEnt[lastCeasedEnt].linkInfo = *linkInst->linkRef->get_myLinkInfo();
+				lastCeasedEnt++;
+
+				linkInst->linkRef->Link_delete();
+				delete linkInst->linkRef;
+
+				if (linkInst->prevInst == 0) {  // First link instance, this case should never really happen!!!
+				
+					if (linkInst->nextInst != 0) {  // There is at least one other link instance
+						linkInst->nextInst->prevInst = 0;
+						linkInst->nextFree = nextFreeLinkInst;
+						nextFreeLinkInst = linkInst;
+					}
+					else {  // All link instances are gone;
+						linkInst->nextFree = nextFreeLinkInst;
+						nextFreeLinkInst = linkInst;
+						lastLinkCreated = 0;
+					};
+
+				}
+				else if (linkInst->nextInst == 0) {  // Last link instance
+					linkInst->prevInst->nextInst = 0;
+					linkInst->nextFree = nextFreeLinkInst;
+					nextFreeLinkInst = linkInst;
+					lastLinkCreated = linkInst->prevInst;
+				}
+				else {  // Somewhere inbetween
+					linkInst->prevInst->nextInst = linkInst->nextInst;
+					linkInst->nextInst->prevInst = linkInst->prevInst;
+					linkInst->nextFree = nextFreeLinkInst;
+					nextFreeLinkInst = linkInst;
+				};
+
+				numberLinkInstances--;
+				if (SYS_eventTrace == true) { this->eventTrace(&get_identity(), id, SYS_LL_MEDIUM, "Request_of_link_deletion_(executed)", 0, 0, 0, 0);} 
+			}
+			else {
+				runtimerror(&get_identity(), "report_entityDeletion", "Link_instance_not_found", SYS_ERR_HARD);
+				return(-1);
+			}; // entFound == true
+
+		}
+		else {
+			runtimerror(&get_identity(), "req_entityDeletion", "Invalid_Entity_type", SYS_ERR_HARD);
+			return(-1);
+		};
+
+	}
+	else {
+		if (SYS_eventTrace == true) { this->eventTrace(&get_identity(), id, SYS_LL_MEDIUM, "Request_of_entity_deletion_(not_executed)", 0, 0, 0, 0);} 
+	};
+
+	return(0);
+};
+
+void *System::init_protTrace(GenericPDU_s *pdu, Identity_s *origNode, GenericMsgType msgType) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, init_protTrace\n";}
+	int oldProtIndex;
+
+	if (SYS_protTrace == true) {
+
+		if (protTraceIndex < SYS_MAX_PROTTRACES) {
+			
+			try {
+				protTrace[protTraceIndex] = new SYS_ProtTrace_s;
+			} catch (bad_alloc xa) {
+				SYSTEM->runtimerror(&get_identity(), "init_protTrace", "memory_allocation_failure", SYS_ERR_HARD);
+				return(0);
+			}
+
+			protTrace[protTraceIndex]->origNodeFilter = origNode;
+			protTrace[protTraceIndex]->msgTypeFilter = msgType;
+			protTrace[protTraceIndex]->origNode = pdu->header.sourceNode;
+			protTrace[protTraceIndex]->msgType = pdu->header.msgType;
+			protTrace[protTraceIndex]->tickPoint = this->getTicks();
+			protTrace[protTraceIndex]->protEventIndex = 0;
+			oldProtIndex = protTraceIndex;
+			protTraceIndex++;
+			return((void *)protTrace[oldProtIndex]);
+		}
+		else {
+			return(0);
+		};
+
+	}
+	else {
+		return(0);
+	};
+
+};
+
+int System::report_protTraceEvent(Identity_s *nodeId, Identity_s *nodeInfId, DataDirection dataDir, GenericPDU_s *pdu) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, report_protTraceEvent\n";}
+	SYS_ProtTrace_s *protTraceRef;
+	int protEventIndex;
+
+	if (pdu->protTraceRef != 0) {
+		protTraceRef = (SYS_ProtTrace_s *) pdu->protTraceRef;
+		protEventIndex = protTraceRef->protEventIndex;
+	
+		if (protEventIndex < SYS_MAX_PROTTRACEEVENTS) {
+
+			if (this->check_protTraceFilter(protTraceRef, pdu) == true) {
+				protTraceRef->protEvent[protEventIndex].nodeHop.nodeId = *nodeId;
+				protTraceRef->protEvent[protEventIndex].nodeHop.nodeInfId = *nodeInfId;
+				protTraceRef->protEvent[protEventIndex].PDU_TTL = pdu->header.PDU_TTL;
+				protTraceRef->protEvent[protEventIndex].pduDir = dataDir;
+				protTraceRef->protEvent[protEventIndex].tickPoint = this->getTicks();
+				protTraceRef->protEventIndex++;
+			}
+
+			return(0);
+		}
+		else {
+			SYSTEM->runtimerror(&get_identity(), "report_protTraceEvent", "Exceeded_event_limit_for_this_trace", SYS_ERR_HARD);
+			return(-1);
+		};
+
+//	}
+//	else {
+//		SYSTEM->runtimerror(&get_identity(), "report_protTraceEvent", "Null pointer for protTraceRef");
+//		return(-1);
+	};
+
+};
+
+bool System::check_protTraceFilter(SYS_ProtTrace_s *protTraceRef, GenericPDU_s *pdu) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, check_protTraceFilter\n";}
+	Identity_s origNode;
+	GenericMsgType msgType;
+
+	msgType = pdu->header.msgType;
+
+	if (protTraceRef->origNodeFilter != 0) {
+
+		// First find orig node of PDU, is in message body.
+		if (msgType == HELLO) {
+			origNode = pdu->msgBody.helloBody->localNode.nodeId;
+		}
+		else if (msgType == EXT_NODETOPOLOGY) {
+			origNode = pdu->msgBody.extNodeTopBody->sourceNode.nodeId;
+		}
+		else if (msgType == EXT_TOPOLOGY_REFRESH) {
+			origNode = pdu->msgBody.extTopRefreshBody->sourceNode.nodeId;
+		}
+		else if (msgType == CENTROID) {
+			origNode = pdu->msgBody.centroidBody->sourceNode.nodeId;
+		}
+		else if (msgType == CENTROID_REFRESH) {
+			origNode = pdu->msgBody.centroidRefreshBody->sourceNode.nodeId;
+		}
+		else if (msgType == SUPERNODE) {
+			origNode = pdu->msgBody.superNodeBody->sourceNode.nodeId;
+		}
+		else if (msgType == SUPERNODE_REFRESH) {
+			origNode = pdu->msgBody.superNodeRefreshBody->sourceNode.nodeId;
+		}
+		else if (msgType == LINK_ABSTRACTION) {
+			origNode = pdu->msgBody.linkAbstBody->sourceNode.nodeId;
+		}
+		else if (msgType == LINK_ABST_REFRESH) {
+			origNode = pdu->msgBody.linkAbstRefreshBody->sourceNode.nodeId;
+		}
+		else if (msgType == REISSUE) {
+			origNode = pdu->msgBody.reissueBody->sourceNode.nodeId;
+		};
+
+		if (globalNameSpace->check_ifEqual(protTraceRef->origNodeFilter->name, origNode.name) == true) {
+
+			if (protTraceRef->msgTypeFilter == GENMSG_UNDEFINED) {  // Capture all messages from this node
+				return(true);
+			}
+			else if (protTraceRef->msgTypeFilter == HELLO && msgType == HELLO) {
+				return(true);
+			}
+			else if ((protTraceRef->msgTypeFilter == EXT_NODETOPOLOGY) && (msgType == EXT_NODETOPOLOGY || msgType == EXT_TOPOLOGY_REFRESH)) {
+				return(true);
+			}
+			else if ((protTraceRef->msgTypeFilter == CENTROID) && (msgType == CENTROID || msgType == CENTROID_REFRESH)) {
+				return(true);
+			}
+			else if ((protTraceRef->msgTypeFilter == SUPERNODE) && (msgType == SUPERNODE || msgType == SUPERNODE_REFRESH)) {
+				return(true);
+			}
+			else if ((protTraceRef->msgTypeFilter == LINK_ABSTRACTION) && (msgType == LINK_ABSTRACTION || msgType == LINK_ABST_REFRESH)) {
+				return(true);
+			}
+			else if (protTraceRef->msgTypeFilter == REISSUE && msgType == REISSUE) {
+				return(true);
+			}
+			else {
+				return(false);
+			};
+
+		}
+		else {
+			return(false);
+		};
+
+	}
+	else {  // OrigNode doesn't matter
+			
+		if (protTraceRef->msgTypeFilter == GENMSG_UNDEFINED) {  // Capture all messages from this node
+			return(true);
+		}
+		else if (protTraceRef->msgTypeFilter == HELLO && msgType == HELLO) {
+			return(true);
+		}
+		else if ((protTraceRef->msgTypeFilter == EXT_NODETOPOLOGY) && (msgType == EXT_NODETOPOLOGY || msgType == EXT_TOPOLOGY_REFRESH)) {
+			return(true);
+		}
+		else if ((protTraceRef->msgTypeFilter == CENTROID) && (msgType == CENTROID || msgType == CENTROID_REFRESH)) {
+			return(true);
+		}
+		else if ((protTraceRef->msgTypeFilter == SUPERNODE) && (msgType == SUPERNODE || msgType == SUPERNODE_REFRESH)) {
+			return(true);
+		}
+		else if ((protTraceRef->msgTypeFilter == LINK_ABSTRACTION) && (msgType == LINK_ABSTRACTION || msgType == LINK_ABST_REFRESH)) {
+			return(true);
+		}
+		else if (protTraceRef->msgTypeFilter == REISSUE && msgType == REISSUE) {
+			return(true);
+		}
+		else {
+			return(false);
+		};
+
+	};
+
+};
+
+void System::threadTrace(Identity_s *sourceId, Identity_s *entityId) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, threadTrace\n";}
+
+	if (SYS_traceFile == true) {
+
+		if (currentNumberTraceEvents < SIZE_TRACELOG) {
+			loggedTrace[loggedTraceHead].tickPoint.tickPoint = currentTickPoint.tickPoint;
+			loggedTrace[loggedTraceHead].traceType = SYS_TET_THREAD;
+			loggedTrace[loggedTraceHead].sourceId = *sourceId;
+			loggedTrace[loggedTraceHead].entityId = *entityId;
+			loggedTraceHead++;
+			loggedTraceHead &= (SIZE_TRACELOG-1);
+			currentNumberTraceEvents++;
+		}
+		else {
+			runtimerror(&get_identity(), "threadTrace", "TraceLog_full", SYS_ERR_HARD);
+		};
+	}
+	else {
+		cout << currentTickPoint.tickPoint << " ThreadTrace: Source/Entity " << sourceId->type << "/" << sourceId->nickName << "/" << sourceId->name.name << " ";
+		cout << entityId->type << " " << "/" << entityId->nickName << "/" << entityId->name.name << "\n";
+	};
+
+};
+
+void System::funcTrace(string classFunction) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, funcTrace\n";}
+	if (SYS_traceFile == true) {
+
+		if (currentNumberTraceEvents < SIZE_TRACELOG) {
+			loggedTrace[loggedTraceHead].tickPoint.tickPoint = currentTickPoint.tickPoint;
+			loggedTrace[loggedTraceHead].traceType = SYS_TET_FUNC;
+			loggedTrace[loggedTraceHead].comment = classFunction;
+			loggedTraceHead++;
+			loggedTraceHead &= (SIZE_TRACELOG-1);
+			currentNumberTraceEvents++;
+		}
+		else {
+			runtimerror(&get_identity(), "funcTrace", "TraceLog_full", SYS_ERR_HARD);
+		};
+	}
+	else {
+		cout << currentTickPoint.tickPoint << " FuncTrace: " << classFunction << "\n";
+	};
+
+};
+
+void System::eventTrace(Identity_s *sourceId, Identity_s *entityId, SYS_LogLevel level, string comment, int *i_val, float *f_val, bool *b_val, Identity_s *idArray) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, eventTrace\n";}
+	SYS_NodeInstance_s *nodeInst;
+	NodeInfo_s *nodeInfo;
+	int i;
+
+	if (SYS_traceFile == true && level >= logLevel) {
+
+		if (currentNumberTraceEvents < SIZE_TRACELOG) {
+			loggedTrace[loggedTraceHead].tickPoint.tickPoint = currentTickPoint.tickPoint;
+			loggedTrace[loggedTraceHead].traceType = SYS_TET_EVENT;
+			loggedTrace[loggedTraceHead].sourceId = *sourceId;
+			loggedTrace[loggedTraceHead].entityId = *entityId;
+			loggedTrace[loggedTraceHead].comment = comment;
+
+			if (entityId->type == "NODE") {
+				nodeInst = this->find_nodeInst("-", entityId);
+
+				if (nodeInst != 0) {
+					nodeInfo = nodeInst->nodeRef->get_myNodeInfo();
+					loggedTrace[loggedTraceHead].domainLevel = nodeInfo->nodeTraits.domainLevel;
+				}
+
+			}
+			else {
+				loggedTrace[loggedTraceHead].domainLevel = DL_UNASSIGNED;
+			};
+
+
+			if (i_val != 0) {
+				loggedTrace[loggedTraceHead].i_valValid = true;
+				loggedTrace[loggedTraceHead].i_value = *i_val;
+			}
+			else {
+				loggedTrace[loggedTraceHead].i_valValid = false;
+			}
+
+			if (f_val != 0) {
+				loggedTrace[loggedTraceHead].f_valValid = true;
+				loggedTrace[loggedTraceHead].f_value = *f_val;
+			}
+			else {
+				loggedTrace[loggedTraceHead].f_valValid = false;
+			}
+
+			if (b_val != 0) {
+				loggedTrace[loggedTraceHead].b_valValid = true;
+				loggedTrace[loggedTraceHead].b_value = *b_val;
+			}
+			else {
+				loggedTrace[loggedTraceHead].b_valValid = false;
+			}
+
+			if (idArray != 0) {
+
+				for (i = 0; i < SYS_MAX_IDARRAY && idArray->type != "-"; i++) {
+					loggedTrace[loggedTraceHead].idArray[i] = *idArray++;
+				}
+
+				loggedTrace[loggedTraceHead].idArray[i] = this->reset_anotherIdentity();
+			}
+			else {
+				loggedTrace[loggedTraceHead].idArray[0] = this->reset_anotherIdentity();
+			};
+
+			loggedTraceHead++;
+			loggedTraceHead &= (SIZE_TRACELOG-1);
+			currentNumberTraceEvents++;
+		}
+		else {
+			runtimerror(&get_identity(), "eventTrace", "TraceLog_full", SYS_ERR_HARD);
+		};
+	}
+	else if (SYS_traceFile == false) {
+		cout << currentTickPoint.tickPoint << " EventTrace: " << comment;
+
+		if (i_val != 0) {
+			cout << " " << "I-value: " << *i_val;
+		}
+
+		if (f_val != 0) {
+			cout << " " << "F-value: " << *f_val;
+		}
+
+		if (b_val != 0) {
+			cout << " " << "B-value: " << *b_val;
+		}
+
+		if (idArray != 0) {
+			cout << "\nIdArray: ";
+
+			for (i = 0; i < SYS_MAX_IDARRAY && idArray->type != "-"; i++) {
+				cout << idArray->type << "/" << idArray->nickName << "/" << idArray->name.name << " ";
+				idArray++;
+			}
+
+		};
+
+		cout << "\n";
+	};
+
+};
+
+void System::errorTrace(SYS_RunTimError_s *errorRef) {  // Function should only be called from runtimerror!!!
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, errorTrace\n";}
+
+	if (currentNumberTraceEvents < SIZE_TRACELOG) {
+		loggedTrace[loggedTraceHead].tickPoint.tickPoint = currentTickPoint.tickPoint;
+		loggedTrace[loggedTraceHead].traceType = SYS_TET_ERROR;
+		loggedTrace[loggedTraceHead].errorRef = errorRef;
+		loggedTraceHead++;
+		loggedTraceHead &= (SIZE_TRACELOG-1);
+		currentNumberTraceEvents++;
+	}
+	else {
+		string input;
+		cout << "\nSystem::errorTrace, trace log full!!!\n"; cin >> input;
+		exit(-1);
+	};
+
+};
+
+void System::breakExecution(TickPoint_s tickPoint) {
+	SYS_NodeInstance_s *nodeInst;
+	SYS_LinkInstance_s *linkInst;
+	string input;
+
+	if (currentTickPoint.tickPoint == tickPoint.tickPoint) {
+		cout << tickPoint.tickPoint << " Execution has stopped!!!\n";
+		cin >> input;
+		logTraceEvents(*testOut);
+		*testOut << ":END_SIMULATION\n\n";
+		this->logErrorLog(*testOut);
+
+		nodeInst = lastNodeCreated;
+
+		*testOut << "TESTOUT_NODE_LINK_LOG:\n";
+
+		while (nodeInst != 0) {
+
+			if (nodeInst->entStatus == SYS_SYSTEM_CREATED) {
+				*testOut << "\n";
+				*testOut << "Node: " << nodeInst->nodeId.nickName << "\n";
+				*testOut << nodeInst->nodeRef;
+			}
+
+			nodeInst = nodeInst->prevInst;
+		};
+
+		// Will only list "core" links, i.e. those created by the System, as the superNodes will list the linkAbstractions.
+		linkInst = lastLinkCreated;
+
+		while (linkInst != 0) {
+
+			if (linkInst->entStatus == SYS_SYSTEM_CREATED) {
+				*testOut << "\n";
+				*testOut << "Link: " << linkInst->linkId.nickName << "\n";
+				*testOut << linkInst->linkRef;
+			}
+
+			linkInst = linkInst->prevInst;
+		};
+
+		*testOut << ":END_NODE_LINK_LOG\n\n";
+		this->logTopology(*testOut);
+		this->logProtTrace(*testOut);
+		FORCE_EXIT(*testOut);
+	}
+
+};
+
+void System::chk_log_polls(ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, chk_log_polls\n";}
+	int i, j, loggedTraceTailCopy;
+
+	for (i = 0; i < SYS_MAX_POLLS; i++) {
+
+		if (nodePoll[i].closePoll.tickPoint != 0) {  // Poll is active
+
+			if (nodePoll[i].closePoll.tickPoint >= getTicks().tickPoint) {  // Poll is still active, check if scheduled or event-based
+
+				if (nodePoll[i].nextPoll.tickPoint != 0) {  // It is scheduled
+
+					if (nodePoll[i].nextPoll.tickPoint == getTicks().tickPoint) {
+						logNodePolls(i, -1, out);
+						nodePoll[i].nextPoll.tickPoint += nodePoll[i].pollFrequency.tickPoint;
+					}
+
+				}
+				else {  // It is event-based, check for a matching event
+
+					for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+						// Scan through all existing events in traceLog and match against list of nodes to be polled
+
+						if (nodePoll[i].nodeRef[j] != 0) {
+							loggedTraceTailCopy = nodePoll[i].loggedTraceTailCopy;
+
+							while (loggedTraceTailCopy != loggedTraceHead) {
+
+								if (loggedTrace[loggedTraceTailCopy].traceType == SYS_TET_EVENT) {
+
+									if (globalNameSpace->check_ifEqual(loggedTrace[loggedTraceTailCopy].entityId.name, nodePoll[i].nodeRef[j]->get_identity().name) == true) {
+										logNodePolls(i, loggedTraceTailCopy, out);
+									}
+
+									loggedTraceTailCopy++;
+									loggedTraceTailCopy &= (SIZE_TRACELOG-1);
+								}
+								else {
+									loggedTraceTailCopy++;
+									loggedTraceTailCopy &= (SIZE_TRACELOG-1);
+								};
+
+							}
+
+						}
+
+					}
+
+					nodePoll[i].loggedTraceTailCopy = loggedTraceHead;  // Save updated value
+				};
+
+			}
+			else {  // Poll shall be closed
+				nodePoll[i].pollName = "-";
+				nodePoll[i].startPoll.tickPoint = nodePoll[i].closePoll.tickPoint = nodePoll[i].nextPoll.tickPoint = nodePoll[i].pollFrequency.tickPoint = 0;
+				nodePoll[i].loggedTraceTailCopy = -1;
+
+				for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+					nodePoll[i].nodeRef[j] = 0;
+				}
+
+			};
+
+		}
+
+	}
+
+};
+
+void System::remove_fromNodePolls(Node *nodeRef) {  // Remove this node reference from all node polls where it might be stored
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, remove_fromNodePolls\n";}
+	int i, j;
+
+	for (i = 0; i < SYS_MAX_POLLS; i++) {
+
+		if (nodePoll[i].closePoll.tickPoint != 0) {  // Poll is active
+
+			for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+
+				if (nodePoll[i].nodeRef[j] != 0) {
+
+					if (globalNameSpace->check_ifEqual(nodeRef->get_identity().name, nodePoll[i].nodeRef[j]->get_identity().name) == true) {
+						nodePoll[i].nodeRef[j] = 0;
+					}
+
+				}
+
+			}
+
+		}
+
+	}
+
+};
+
+int System::logDefinitions(ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logDefinitions\n";}
+	int i, j;
+
+	out << "TESTOUT_DEFINITIONS:\n";
+	out << "System CONSTANTS:\n"<< "   Seed: " << seed << " Tick resolution: " << TICKS_RESOLUTION << "\n";
+
+	out << "TYPE definitions:\n";
+
+	for (i = 0; i < numberNodeInfTypes; i++) {
+		out << "Node interface type: " << nodeInterfaceType[i].extNodeInfType << "\n";
+		out << "  Generic traits:\n"; 
+		out << "    CompletionTime: " << nodeInterfaceType[i].nodeInfTraits.genInfTraits.completionTime << " MTBF: " << nodeInterfaceType[i].nodeInfTraits.genInfTraits.mtbf << "\n";
+		out << "  External interface traits:\n";
+		out << "    Data direction: " << nodeInterfaceType[i].nodeInfTraits.attPointExtTraits.flowdir << " Beacon: " << nodeInterfaceType[i].nodeInfTraits.attPointExtTraits.beacon << "\n";
+		out << "    TX queue length: " << nodeInterfaceType[i].nodeInfTraits.infExtTraits.queueTxLength << " RX queue length: " << nodeInterfaceType[i].nodeInfTraits.infExtTraits.queueRxLength << "\n";
+		out << "  Internal interface traits:\n";
+		out << "    Data direction: " << nodeInterfaceType[i].nodeInfTraits.attPointIntTraits.flowdir << " Beacon: " << nodeInterfaceType[i].nodeInfTraits.attPointIntTraits.beacon << "\n";
+		out << "    TX queue length: " << nodeInterfaceType[i].nodeInfTraits.infIntTraits.queueTxLength << " RX queue length: " << nodeInterfaceType[i].nodeInfTraits.infIntTraits.queueRxLength << "\n";
+		out << "  Vertical interface traits:\n";
+		out << "    Data direction: " << nodeInterfaceType[i].nodeInfTraits.attPointVerTraits.flowdir << " Beacon: " << nodeInterfaceType[i].nodeInfTraits.attPointVerTraits.beacon << "\n";
+		out << "    TX queue length: " << nodeInterfaceType[i].nodeInfTraits.infVerTraits.queueTxLength << " RX queue length: " << nodeInterfaceType[i].nodeInfTraits.infVerTraits.queueRxLength << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberSwitchCoreInfTypes; i++) {
+		out << "SwitchCore interface type: " << switchCoreInterfaceType[i].extSwitchCoreInfType << "\n";
+		out << "  Generic traits:\n"; 
+		out << "    CompletionTime: " << switchCoreInterfaceType[i].switchCoreInfTraits.genInfTraits.completionTime << " MTBF: " << switchCoreInterfaceType[i].switchCoreInfTraits.genInfTraits.mtbf << "\n";
+		out << "  Specific traits:\n";
+		out << "    TX queue length: " << switchCoreInterfaceType[i].switchCoreInfTraits.switchCoreInfTraits.queueTxLength << " RX queue length: " << switchCoreInterfaceType[i].switchCoreInfTraits.switchCoreInfTraits.queueRxLength << "\n";
+		out << "    Data direction: " << switchCoreInterfaceType[i].switchCoreInfTraits.attPointTraits.flowdir << " Beacon: " << switchCoreInterfaceType[i].switchCoreInfTraits.attPointTraits.beacon << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberSwitchCoreTypes; i++) {
+		out << "SwitchCore type: " << switchCoreType[i].extSwitchCoreType << "\n";
+		out << "  SwitchCore interface type: " << switchCoreType[i].switchCoreInfType->extSwitchCoreInfType << "\n";
+		out << "  Generic traits:\n"; 
+		out << "    CompletionTime: " << switchCoreType[i].switchCoreTraits.genSwitching.completionTime << " MTBF: " << switchCoreType[i].switchCoreTraits.genSwitching.mtbf << "\n";
+		out << "  Specific traits:\n";
+		out << "    Maxium number of interfaces: " << switchCoreType[i].switchCoreTraits.maxInf << "\n";
+		out << "    Capacity: " << switchCoreType[i].switchCoreTraits.switching.capacity << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberNodeTypes; i++) {
+		out << "Node type: " << nodeType[i].extNodeType << "\n";
+		out << "  Number node interface types: " << nodeType[i].numberNodeInfTypes << "\n";
+
+		for (j = 0; j < nodeType[i].numberNodeInfTypes; j++) {
+			out << "    Node interface type: " << nodeType[i].nodeInfType[j]->extNodeInfType << "\n";
+		};
+
+		out << "  SwitchCore type: " << nodeType[i].switchCoreType->extSwitchCoreType << "\n";
+		out << "  Domain radius: " << nodeType[i].domainRadius << "\n";
+		out << "  Node traits:\n";
+		out << "    Max number interfaces: " << nodeType[i].nodeTraits.maxInf << "\n";
+		out << "    Domain level: " << nodeType[i].nodeTraits.domainLevel << "\n";
+		out << "    Mobility pattern: " << nodeType[i].nodeTraits.mobPattern << "\n";
+		out << "    Processing traits:\n";
+		out << "      Generic traits:\n";
+		out << "        CompletionTime: " << nodeType[i].nodeTraits.genProcessing.completionTime << " MTBF: " << nodeType[i].nodeTraits.genProcessing.mtbf << "\n";
+		out << "      Specific traits:\n";
+		out << "        Capacity: " << nodeType[i].nodeTraits.processing.capacity << "\n";
+		out << "    Memory traits:\n";
+		out << "      Generic traits:\n";
+		out << "        CompletionTime: " << nodeType[i].nodeTraits.genMemory.completionTime << " MTBF: " << nodeType[i].nodeTraits.genMemory.mtbf << "\n";
+		out << "      Specific traits:\n"; 
+		out << "        Capacity: " << nodeType[i].nodeTraits.memory.capacity << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberLinkEndpointTypes; i++) {
+		out << "Linkendpoint type: " << linkEndpointType[i].extLinkEndpointType << "\n";
+
+		out << "Linkendpoint traits:\n";
+		out << "  Generic traits:\n";
+		out << "    CompletionTime: " << linkEndpointType[i].linkEndpointTraits.genTraits.completionTime << " MTBF: " << linkEndpointType[i].linkEndpointTraits.genTraits.mtbf << "\n";
+		out << "  Specific traits:\n";
+		out	<< "    Data direction: " << linkEndpointType[i].linkEndpointTraits.attPointTraits.flowdir << " Beacon: " << linkEndpointType[i].linkEndpointTraits.attPointTraits.beacon << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberLinkTypes; i++) {
+		out << "Link type: " << linkType[i].extLinkType << "\n";
+		
+		for (j = 0; j < linkType[i].numberLinkEndpointTypes; j++) {
+			out << "    Linkendpoint type: " << linkType[i].linkEndpointType[j]->extLinkEndpointType << "\n";
+		};
+
+		out << "Link traits:\n";
+		out << "  Length: " << linkType[i].linkTraits.length << "\n";
+		out << "  Max number linkendpoints: " << linkType[i].linkTraits.maxLinkEndpoints << "\n";
+		out << "  Generic traits:\n";
+		out << "    CompletionTime: " << linkType[i].linkTraits.genTransmission.completionTime << " MTBF: " << linkType[i].linkTraits.genTransmission.mtbf << "\n";
+		out << "  Specific traits:\n";
+		out	<< "    Bandwidth: " << linkType[i].linkTraits.transmission.bandwidth << " BER: " << linkType[i].linkTraits.transmission.ber << "\n";
+		out << "\n";
+	};
+
+	for (i = 0; i < numberClusterTypes; i++) {
+		out << "Cluster type: " << clusterType[i].extClusterType << "\n";
+		out << "Cluster traits:\n";
+		out << "  Max cluster size: " << clusterType[i].maxClusterSize << "\n";
+		out << "  Topology: " << clusterType[i].topology << "\n";
+		out << "  Connectivity: " << clusterType[i].clusterConnectivity << "\n";
+
+		out << "  Node types: ";
+
+		for (j = 0; j < clusterType[i].numberNodeTypes; j++) {
+			out << clusterType[i].nodeType[j]->extNodeType;
+		};
+
+		out << "\n";
+		out << "  Link types: ";
+
+		for (j = 0; j < clusterType[i].numberLinkTypes; j++) {
+			out << clusterType[i].linkType[j]->extLinkType;
+		};
+
+		out << "\n";
+	};
+
+	out << ":END_DEFINITIONS\n\n";
+
+	return (0);
+};
+
+
+int System::logTraceEvents(ofstream &out) {
+	int i;
+
+	while (loggedTraceTail != loggedTraceHead) {
+
+		if (loggedTrace[loggedTraceTail].traceType == SYS_TET_THREAD) {
+			out << "T_: " << loggedTrace[loggedTraceTail].tickPoint.tickPoint << " R_:"; 
+			out << " ThreadTrace: DomainLevel,Source,Entity " << loggedTrace[loggedTraceTail].domainLevel << " , "; 
+			out << loggedTrace[loggedTraceTail].sourceId.type << " / " << loggedTrace[loggedTraceTail].sourceId.nickName << " / " << loggedTrace[loggedTraceTail].sourceId.name.name << " , "; 
+			out << loggedTrace[loggedTraceTail].entityId.type << " / " << loggedTrace[loggedTraceTail].entityId.nickName << " / " << loggedTrace[loggedTraceTail].entityId.name.name << " ";
+			out << ":_ER :_ET\n";
+		}
+		else if (loggedTrace[loggedTraceTail].traceType == SYS_TET_FUNC) {
+			out << "T_: " << loggedTrace[loggedTraceTail].tickPoint.tickPoint << " R_:"; 
+			out << " FuncTrace: " << loggedTrace[loggedTraceTail].comment << " ";
+			out << ":_ER :_ET\n";
+		}
+		else  if (loggedTrace[loggedTraceTail].traceType == SYS_TET_EVENT) {
+			out << "T_: " << loggedTrace[loggedTraceTail].tickPoint.tickPoint << " R_:"; 
+			out << " EventTrace: Source,Entity " << loggedTrace[loggedTraceTail].sourceId.type << " / " << loggedTrace[loggedTraceTail].sourceId.nickName << " / " << loggedTrace[loggedTraceTail].sourceId.name.name << " , ";
+			out << loggedTrace[loggedTraceTail].entityId.type << " / " << loggedTrace[loggedTraceTail].entityId.nickName << " / " << loggedTrace[loggedTraceTail].entityId.name.name << "\n";
+			out << loggedTrace[loggedTraceTail].comment << " ";
+
+			if (loggedTrace[loggedTraceTail].i_valValid == true) {
+				out << "I-value: " << loggedTrace[loggedTraceTail].i_value << " ";
+			}
+
+			if (loggedTrace[loggedTraceTail].f_valValid == true) {
+				out << "F-value: " << loggedTrace[loggedTraceTail].f_value << " ";
+			}
+
+			if (loggedTrace[loggedTraceTail].b_valValid == true) {
+				out << "B-value: " << loggedTrace[loggedTraceTail].b_value << " ";
+			}
+
+			if (loggedTrace[loggedTraceTail].idArray[0].type != "-") {
+				out << "\nidArray: ";
+
+				for (i = 0; i < SYS_MAX_IDARRAY && loggedTrace[loggedTraceTail].idArray[i].type != "-"; i++) {
+					out << loggedTrace[loggedTraceTail].idArray[i].type << " / " << loggedTrace[loggedTraceTail].idArray[i].nickName << " / " << loggedTrace[loggedTraceTail].idArray[i].name.name;
+
+					if (loggedTrace[loggedTraceTail].idArray[i+1].type != "-") {
+						out << " , ";
+					}
+					else {
+						out << " ";
+					};
+
+				}
+			
+			}
+
+			out << ":_ER :_ET\n"; 
+		}
+		else  if (loggedTrace[loggedTraceTail].traceType == SYS_TET_ERROR) {
+			out << "T_: " << loggedTrace[loggedTraceTail].errorRef->tickPoint.tickPoint << " E_:";
+			out << " ERROR!!! " << "  Identity: ";
+			out << loggedTrace[loggedTraceTail].errorRef->source.type << " / " << loggedTrace[loggedTraceTail].errorRef->source.nickName << " / " << loggedTrace[loggedTraceTail].errorRef->source.name.name;
+			out << "  Class function: " << loggedTrace[loggedTraceTail].errorRef->classFunction;
+			out << "  Reason: " << loggedTrace[loggedTraceTail].errorRef->reason;
+			out << "  Error level " << loggedTrace[loggedTraceTail].errorRef->errorLevel;
+			out << " :_EE :_ET\n";
+		};
+
+		loggedTraceTail++;
+		loggedTraceTail &= (SIZE_TRACELOG-1);
+		currentNumberTraceEvents--;
+	};
+
+	return(0);
+};
+
+void System::logTopology(ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logTopology\n";}
+	SYS_NodeInstance_s *nodeInst;
+	int j, k, numberNodeInf, numberNeighbors;
+	NodeTopologyItem_s nodeTopItem;
+	NeighborNodeItem_s *neighborItem;
+	Entity *enp;
+	Identity_s id;
+
+	out << "\nTESTOUT_NODE_TOPOLOGY:\n";
+	nodeInst = lastNodeCreated;
+
+	while (nodeInst != 0) {
+		id = nodeInst->nodeRef->get_identity();
+		out << "  Node: " << id.type << " / " << id.nickName << " / " << id.name.name << "\n";
+		numberNodeInf = nodeInst->nodeRef->get_currentNumberNodeInf();
+		out << "    Node interfaces:\n";
+
+		for (j = 0; j < numberNodeInf; j++) {
+			nodeTopItem = nodeInst->nodeRef->getNext_nodeTopItem(false);
+			enp = nodeTopItem.nodeInterface;
+			out << "      " << enp;
+
+			if (nodeTopItem.attachedExtLink != 0) {
+				enp = nodeTopItem.localExtLinkEndpoint;
+				out << "        " << enp;
+				enp = nodeTopItem.attachedExtLink;
+				out << "        " << enp;
+				numberNeighbors = nodeTopItem.currentNumberNeighbors;
+
+				if (numberNeighbors > 0) {
+					neighborItem = nodeTopItem.firstNeighborItem;
+					out << "          Neighbors:\n";
+
+					for (k = 0; k < numberNeighbors; k++) {
+						id = neighborItem->neighbor.remoteNode.nodeId;
+						out << "            Type: " << id.type << " Nickname: " << id.nickName << " Name: " << id.name.name  << "\n";
+					}
+
+				}
+				else {
+					out << "          There are no neighbors\n";
+				};
+
+			}
+			else {
+				out << "        No link attached\n";
+			};
+
+		};  // ENDFOR numberNodeInf
+
+		nodeInst->nodeRef->getNext_nodeTopItem(true);
+
+		out << "\n";
+
+		nodeInst = nodeInst->prevInst;
+	};  // ENDWHILE nodeInst
+
+	out << ":END_NODE_TOPOLOGY\n\n";
+};
+
+int System::logErrorLog(ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logErrorLog\n";}
+	// Current implementation doesn't allow errors to be overwritten!!! I.e. the error log DOES NOT save the last SIZE_ERRORLOG errors.
+	int i;
+
+	out << "\nTESTOUT_ERRORLOG:\n";
+
+	if (currentNumberErrors > 0) {
+
+		for (i = 0; i < currentNumberErrors; i++) {
+			out << "Tickpoint:" << loggedError[loggedErrorTail].tickPoint.tickPoint << "\n";
+			out << "  Identity:\n";
+			out << "    Type: " << loggedError[loggedErrorTail].source.type << " Nickname: " << loggedError[loggedErrorTail].source.nickName << " Name: " << loggedError[loggedErrorTail].source.name.name << "\n";
+			out << "  Class function: " << loggedError[loggedErrorTail].classFunction << "\n";
+			out << "  Reason: " << loggedError[loggedErrorTail].reason << "\n";
+			loggedErrorTail++;
+			loggedErrorTail &= (SIZE_ERRORLOG-1);
+		}
+
+	}
+	else {
+		out << "  ERROR LOG is empty\n";
+	};
+
+	out << ":END_ERRORLOG\n\n";
+
+	return (0);
+};
+
+
+
+void System::logProtTrace(std::ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logProtTrace\n";}
+	int i, j, protEventIndex, length;
+
+	for (i = 0; i < protTraceIndex; i++) {
+		out << "T_: " << protTrace[i]->tickPoint.tickPoint << " R_: Protocol trace:\n";
+		out << " Orig node & nodeInf: " << protTrace[i]->origNode.nodeId.nickName << " / " << protTrace[i]->origNode.nodeId.name.name << ", ";
+		out << protTrace[i]->origNode.nodeInfId.nickName << " / " << protTrace[i]->origNode.nodeInfId.name.name << " ";
+		out << " Msg type: ";
+
+		switch (protTrace[i]->msgType) {
+
+			case HELLO:
+				out << "HELLO\n";
+				break;
+			case EXT_NODETOPOLOGY:
+				out << "EXT_NODETOPOLOGY\n";
+				break;
+			case EXT_TOPOLOGY_REFRESH:
+				out << "EXT_TOPOLOGY_REFRESH\n";
+				break;
+			case CENTROID:
+				out << "CENTROID\n";
+				break;
+			case CENTROID_REFRESH:
+				out << "CENTROID_REFRESH\n";
+				break;
+			case SUPERNODE:
+				out << "SUPERNODE\n";
+				break;
+			case SUPERNODE_REFRESH:
+				out << "SUPERNODE_REFRESH\n";
+				break;
+			case LINK_ABSTRACTION:
+				out << "LINK_ABSTRACTION\n";
+				break;
+			case LINK_ABST_REFRESH:
+				out << "LINK_ABST_REFRESH\n";
+				break;
+			case REISSUE:
+				out << "REISSUE\n";
+				break;
+			default:
+				out << "Unknown message type!\n";
+		}
+
+		protEventIndex = protTrace[i]->protEventIndex;
+		out << "\tTickpoint\t\tNode hop\t\t\t\tDir\tTTL\n";
+		
+		for (j = 0; j < protEventIndex; j++) {
+			out << "\t" << protTrace[i]->protEvent[j].tickPoint.tickPoint;
+
+			length = etcFunctions->intToCharLength(protTrace[i]->protEvent[j].tickPoint.tickPoint);
+			etcFunctions->tabFill(24, length, out);
+			out << protTrace[i]->protEvent[j].nodeHop.nodeId.nickName << " / " << protTrace[i]->protEvent[j].nodeHop.nodeId.name.name << ", ";
+			out << protTrace[i]->protEvent[j].nodeHop.nodeInfId.nickName << " / " << protTrace[i]->protEvent[j].nodeHop.nodeInfId.name.name;
+			length = protTrace[i]->protEvent[j].nodeHop.nodeId.nickName.size() + 3 + etcFunctions->intToCharLength(protTrace[i]->protEvent[j].nodeHop.nodeId.name.name) + 2;
+			length += protTrace[i]->protEvent[j].nodeHop.nodeInfId.nickName.size() + 3 + etcFunctions->intToCharLength(protTrace[i]->protEvent[j].nodeHop.nodeInfId.name.name);
+			etcFunctions->tabFill(40, length, out);
+			out << protTrace[i]->protEvent[j].pduDir << "\t" << protTrace[i]->protEvent[j].PDU_TTL << "\n";
+		}
+
+		out << ":_ER :_ET\n";
+	}
+
+};
+
+void System::logCeasedEnt(ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logCeasedEnt\n";}
+	NodeInfo_s *nodeInfo;
+	LinkInfo_s *linkInfo;
+	int i;
+
+	out << "\nTESTOUT_CEASEDENT:\n";
+
+	out << "Number of ceased entities: " << lastCeasedEnt << "\n\n";
+
+	for (i = 0; i < lastCeasedEnt; i++) {
+		out << "Type: " << ceasedEnt[i].id.type << " Nickname: " << ceasedEnt[i].id.nickName << " Name: " << ceasedEnt[i].id.name.name  << "\n";
+
+		if (ceasedEnt[i].id.type == "NODE") {
+			nodeInfo = &ceasedEnt[i].nodeInfo;
+
+			if (nodeInfo->coreNode == true) {
+				out << "This is a core node.\n";
+			}
+			else {
+				out << "This is a super node.\n";
+			};
+
+			out << "Domainlevel: " << nodeInfo->nodeTraits.domainLevel << " Domain radius: " << nodeInfo->domainRadius << "\n";
+		}
+		else {  // Must be a link
+			linkInfo = &ceasedEnt[i].linkInfo;
+
+			out << "Length: " << linkInfo->linkTraits.length << " Max link endpoints: " << linkInfo->linkTraits.maxLinkEndpoints << " Bandwidth: " << linkInfo->linkTraits.transmission.bandwidth << " BER: " << linkInfo->linkTraits.transmission.ber << "\n";
+		};
+
+		out << "\n";
+	}
+
+	out << ":END_CEASEDENT\n";
+};
+
+void System::logNode(Node *nodeRef, ObjSelector obj) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logNode\n";}
+	*testOut << "T_: " << this->getTicks().tickPoint << " R_: " << "Node_Log: " << obj << "\n" << nodeRef << "End_Node_Log" << "\n:_ER :_ET\n";
+};
+
+void System::logNodePolls(int nodePollIndex, int loggedTraceTailCopy, std::ofstream &out) {
+	if (SYS_funcSysTrace== true) { cout << "SYSTEM, logNodePolls\n";}
+	NodeInfo_s *nodeInfo[SYS_MAX_POLLNODES];
+	NodeCoordinates_s coord;
+	NodeInterface *nodeInf;
+	AttachedLink_s extLink;
+	CentroidStatus centroidStatus;
+	bool allNodeInfListed[SYS_MAX_POLLNODES], allTotalNodeInfListed;
+	bool allDoNoSListed[SYS_MAX_POLLNODES], allTotalDoNoSListed;
+	Identity_s superNodeId, centroidId, superNodePDUProviderId, nodeInfId, linkId, domainNodeId[2];
+	int j, k, length;
+
+	out << "T_: " << getTicks().tickPoint << " R_: " << "Node_Poll " << nodePoll[nodePollIndex].pollName << "\n";
+	out << "Started at: " << nodePoll[nodePollIndex].startPoll.tickPoint << " Poll frequency: " << nodePoll[nodePollIndex].pollFrequency.tickPoint << " Stops at: " << nodePoll[nodePollIndex].closePoll.tickPoint << "\n";
+	out << "Centroid status: 0 = I_CENTROID, 1 = NOT_CENTROID, 2 = NOT_ELIGIBLE, 3 = UNHOMED_CENTROID, 4 = UNHOMED \n";
+
+	if (loggedTraceTailCopy != -1) {  // Obviously an event-based poll
+		out << " Event-based, Source,Entity " << loggedTrace[loggedTraceTailCopy].sourceId.type << " / " << loggedTrace[loggedTraceTailCopy].sourceId.nickName << " / " << loggedTrace[loggedTraceTailCopy].sourceId.name.name << " , ";
+		out << loggedTrace[loggedTraceTailCopy].entityId.type << " / " << loggedTrace[loggedTraceTailCopy].entityId.nickName << " / " << loggedTrace[loggedTraceTailCopy].entityId.name.name << " ";
+		out << loggedTrace[loggedTraceTailCopy].comment << "\n";
+	}
+
+	out << "Node id (short): \t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			nodeInfo[j] = nodePoll[nodePollIndex].nodeRef[j]->get_myNodeInfo();
+
+			if (nodeInfo[j]->coreNode == true) {
+				out << nodeInfo[j]->nodeId.nickName << "/" << nodeInfo[j]->nodeId.name.name;
+				length = nodeInfo[j]->nodeId.nickName.size() + 1 + globalNameSpace->get_nameLength(nodeInfo[j]->nodeId.name);
+			}
+			else {
+				out << nodeInfo[j]->nodeId.nickName << "/" << nodeInfo[j]->nodeId.name.name;
+				length = nodeInfo[j]->nodeId.nickName.size() + 1 + globalNameSpace->get_nameLength(nodeInfo[j]->nodeId.name);
+			};
+
+			// Add up tabs to next position
+			etcFunctions->tabFill(32, length, out);
+		}
+	}
+
+	out << "\n";
+
+	out << "Coordinates (X/Y/Z):\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			coord = nodePoll[nodePollIndex].nodeRef[j]->get_coordinates();
+			out << coord.xCoord << "/" << coord.yCoord << "/" << coord.zCoord;
+			length = 2 + etcFunctions->intToCharLength(coord.xCoord) + etcFunctions->intToCharLength(coord.yCoord) + etcFunctions->intToCharLength(coord.zCoord);
+			etcFunctions->tabFill(32, length, out);
+		}
+
+	}
+
+	out << "\n";
+
+	out << "DomL, DomR, DomC:\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			out << nodeInfo[j]->nodeTraits.domainLevel << ", " << nodeInfo[j]->domainRadius << ", " << nodeInfo[j]->domainCenter;
+			out << "\t\t\t\t";  // Each parameter is assumed to be one character only
+		}
+
+	}
+
+	out << "\n";
+
+	out << "Supernode id (short):\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			superNodeId = nodePoll[nodePollIndex].nodeRef[j]->get_superNodeId();
+			out << superNodeId.nickName << "/" << superNodeId.name.name;
+			length = 1 + superNodeId.nickName.size() + globalNameSpace->get_nameLength(superNodeId.name);
+			etcFunctions->tabFill(32, length, out);
+		}
+
+	}
+
+	out << "\n";
+
+	out << "Cen id (short), status:\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			centroidId = nodePoll[nodePollIndex].nodeRef[j]->get_centroidStatus(&nodeInfo[j]->nodeId)->currentCentroid;
+			centroidStatus = nodePoll[nodePollIndex].nodeRef[j]->get_centroidStatus(&nodeInfo[j]->nodeId)->centroidStatus;
+			out << centroidId.nickName << "/" << centroidId.name.name << ", " << centroidStatus;
+			length = 4 + centroidId.nickName.size() + globalNameSpace->get_nameLength(centroidId.name);
+			etcFunctions->tabFill(32, length, out);
+		}
+
+	}
+
+	out << "\n";
+
+	out << "SN PDU prv id (short):\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			superNodePDUProviderId = nodePoll[nodePollIndex].nodeRef[j]->get_superNodePDUProvider(false);
+			out << superNodePDUProviderId.nickName << "/" << superNodePDUProviderId.name.name;
+			length = superNodePDUProviderId.nickName.size() + 1 + globalNameSpace->get_nameLength(superNodePDUProviderId.name);
+			etcFunctions->tabFill(32, length, out);
+		}
+
+	}
+
+	out << "\n";
+
+	out << "NodeInf, DL/run, Link:\n\t\t\t";
+	allTotalNodeInfListed = false;
+
+	for (k = 0; k < SYS_MAX_POLLNODES; k++) {
+
+		if (nodePoll[nodePollIndex].nodeRef[k] != 0) {
+			allNodeInfListed[k] = false;
+		}
+		else {
+			allNodeInfListed[k] = true;
+		};
+
+	};
+
+	while (allTotalNodeInfListed == false) {
+
+		for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+			if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+		
+				if (allNodeInfListed[j] == false) {
+					nodeInf = nodePoll[nodePollIndex].nodeRef[j]->getNext_nodeInterface(false);
+
+					if (nodeInf != 0) {
+						nodeInfId = nodeInf->get_identity();
+						extLink = nodeInf->isExtLinkAttached();
+
+						out << nodeInfId.name.name << ", " << nodeInf->get_interfaceDomainLevel() << "/" << nodeInf->isExtInterfaceRunning();
+						length = globalNameSpace->get_nameLength(nodeInfId.name) + 5;
+
+						if (extLink.link != 0) {
+							linkId = extLink.link->get_identity();
+							out << ", " << linkId.nickName << "/" << linkId.name.name;
+							length += 3 + linkId.nickName.size() + globalNameSpace->get_nameLength(linkId.name);
+						}
+						else {
+							out << ", NO LINK";
+							length += 9;
+						};
+		
+						etcFunctions->tabFill(32, length, out);
+					}
+					else {
+						allNodeInfListed[j] = true;
+						out << "\t\t\t\t";  // Add up with 4 tabs
+					};
+
+				}
+				else {
+					out << "\t\t\t\t";  // Add up with 4 tabs
+				};
+
+			}
+			else {
+				out << "\t\t\t\t";  // Add up with 4 tabs
+			};
+
+		}
+
+		// Check through all nodes if all node interfaces have been listed
+		allTotalNodeInfListed = true;
+
+		for (k = 0; k < SYS_MAX_POLLNODES && allTotalNodeInfListed == true; k++) {
+					
+			if (allNodeInfListed[k] == false) {
+				allTotalNodeInfListed = false;
+			}
+
+		}
+
+		if (allTotalNodeInfListed == false) {
+			out << "\n\t\t\t";
+		}
+
+	};
+
+	out << "\n";
+
+	out << "Domain Node Set:\t";
+
+	for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+		if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+			out << "Number nodes: " << nodePoll[nodePollIndex].nodeRef[j]->get_currentNumberDomainNodes();
+			length = 14 + etcFunctions->intToCharLength(nodePoll[nodePollIndex].nodeRef[j]->get_currentNumberDomainNodes());
+			etcFunctions->tabFill(32, length, out);
+		}
+
+	}
+
+	out << "\n\t\t\t";
+
+	allTotalDoNoSListed = false;
+
+	for (k = 0; k < SYS_MAX_POLLNODES; k++) {
+
+		if (nodePoll[nodePollIndex].nodeRef[k] != 0) {
+			allDoNoSListed[k] = false;
+		}
+		else {
+			allDoNoSListed[k] = true;
+		};
+
+	};
+
+	while (allTotalDoNoSListed == false) {
+
+		for (j = 0; j < SYS_MAX_POLLNODES; j++) {
+	
+			if (nodePoll[nodePollIndex].nodeRef[j] != 0) {
+
+				if (allDoNoSListed[j] == false) {
+					// List 2 nodes at each row
+					length = 0;
+
+					if (nodePoll[nodePollIndex].nodeRef[j]->get_currentNumberDomainNodes() > 0) {
+						domainNodeId[0] = nodePoll[nodePollIndex].nodeRef[j]->getNext_domainNodeId(false);
+						domainNodeId[1] = nodePoll[nodePollIndex].nodeRef[j]->getNext_domainNodeId(false);
+					}
+					else {
+						domainNodeId[0] = reset_anotherIdentity();
+						domainNodeId[1] = reset_anotherIdentity();
+					};
+
+
+					if (globalNameSpace->check_ifValid(domainNodeId[0].name) == true) {
+						out << domainNodeId[0].nickName << "/" << domainNodeId[0].name.name;
+						length = domainNodeId[0].nickName.size() + 1 + globalNameSpace->get_nameLength(domainNodeId[0].name);
+
+						if (globalNameSpace->check_ifValid(domainNodeId[1].name) == true) {
+							out << ", " << domainNodeId[1].nickName << "/" << domainNodeId[1].name.name;
+							length += 3 + domainNodeId[1].nickName.size() + globalNameSpace->get_nameLength(domainNodeId[1].name);
+						}
+						else {
+							allDoNoSListed[j] = true;
+						};
+
+					}
+					else {
+
+						if (nodePoll[nodePollIndex].nodeRef[j]->get_currentNumberDomainNodes() > 0) {
+							nodePoll[nodePollIndex].nodeRef[j]->getNext_domainNodeId(true);  // Might be the case that it starts over again, so better reset
+						}
+
+						allDoNoSListed[j] = true;
+					};
+
+					etcFunctions->tabFill(32, length, out);
+				}
+				else {
+					out << "\t\t\t\t";
+				};
+
+			}
+			else {
+				out << "\t\t\t\t";
+			};
+
+		}
+
+		// Check through all nodes if all domain node sets have been listed
+		allTotalDoNoSListed = true;
+
+		for (k = 0; k < SYS_MAX_POLLNODES && allTotalDoNoSListed == true; k++) {
+					
+			if (allDoNoSListed[k] == false) {
+				allTotalDoNoSListed = false;
+			}
+
+		}
+
+		if (allTotalDoNoSListed == false) {
+			out << "\n\t\t\t";
+		}
+
+	}
+
+	out << "\n:_ER :_ET\n";
+
+};
+
+void System::CALLBACK_tickZero(void *parameters, int secret) {  // This functions is not in use
+};
